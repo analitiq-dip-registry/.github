@@ -1,0 +1,66 @@
+name: Update Registry
+
+on:
+  repository_dispatch:
+    types: [connector-updated]
+
+jobs:
+  update-registry:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update registry.json
+        run: |
+          SLUG="${{ github.event.client_payload.slug }}"
+          NAME="${{ github.event.client_payload.name }}"
+          TYPE="${{ github.event.client_payload.type }}"
+          DRIVER="${{ github.event.client_payload.driver }}"
+          REPO="${{ github.event.client_payload.repo }}"
+          VERSION="${{ github.event.client_payload.version }}"
+
+          # Check if connector already exists in registry
+          EXISTS=$(jq --arg slug "$SLUG" '.connectors | map(.slug) | index($slug)' registry.json)
+
+          if [ "$EXISTS" != "null" ]; then
+            # Update existing entry
+            jq --arg slug "$SLUG" \
+               --arg name "$NAME" \
+               --arg type "$TYPE" \
+               --arg driver "$DRIVER" \
+               --arg repo "$REPO" \
+               --arg version "$VERSION" \
+              '(.connectors[] | select(.slug == $slug)) |=
+                { slug: $slug, name: $name, type: $type, repo: $repo, version: $version }
+                + (if $driver != "" then { driver: $driver } else {} end)
+              ' registry.json > tmp.json && mv tmp.json registry.json
+          else
+            # Add new entry
+            ENTRY=$(jq -n \
+              --arg slug "$SLUG" \
+              --arg name "$NAME" \
+              --arg type "$TYPE" \
+              --arg driver "$DRIVER" \
+              --arg repo "$REPO" \
+              --arg version "$VERSION" \
+              '{ slug: $slug, name: $name, type: $type, repo: $repo, version: $version }
+               + (if $driver != "" then { driver: $driver } else {} end)')
+            jq --argjson entry "$ENTRY" '.connectors += [$entry]' registry.json > tmp.json && mv tmp.json registry.json
+          fi
+
+          echo "Updated registry for $SLUG to version $VERSION"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add registry.json
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "chore: update ${{ github.event.client_payload.slug }} to v${{ github.event.client_payload.version }}"
+          git push
