@@ -4,7 +4,7 @@
       "slug": "pipedrive",
       "name": "Pipedrive",
       "type": "api",
-      "repo": "analitiq-dip-registry/connector-pipedrive",
+      "repo": "analitiq-dip-registry/pipedrive",
       "version": "0.1.0"
     },
     {
@@ -12,7 +12,7 @@
       "name": "MySQL",
       "type": "database",
       "driver": "mysql",
-      "repo": "analitiq-dip-registry/connector-mysql",
+      "repo": "analitiq-dip-registry/mysql",
       "version": "0.1.0"
     },
     {
@@ -20,7 +20,7 @@
       "name": "PostgreSQL",
       "type": "database",
       "driver": "postgresql",
-      "repo": "analitiq-dip-registry/connector-postgres",
+      "repo": "analitiq-dip-registry/postgres",
       "version": "0.1.0"
     }
   ]
