@@ -1,0 +1,107 @@
+[
+  {
+    "connector_group_id": "f4c68d34-61ed-4cf7-88a9-8fd4e96a7489",
+    "description": "Integrate with financial tools for invoicing, transactions, and reporting",
+    "lucide_icon": "lucide-wallet",
+    "name": "Finance & Accounting",
+    "slug": "finance_and_accounting"
+  },
+  {
+    "connector_group_id": "dc065d66-9e3d-42ad-a917-f9cf4863c9d5",
+    "description": "Integrate enterprise resource planning and operations tools",
+    "lucide_icon": "lucide-building-2",
+    "name": "ERP & Business Operations",
+    "slug": "erp_and_business_operations"
+  },
+  {
+    "connector_group_id": "0f63f19e-8b34-4fe0-b004-f68fdd1694c4",
+    "description": "General-purpose or custom integrations via APIs",
+    "lucide_icon": "lucide-code",
+    "name": "Developer Tools & APIs",
+    "slug": "developer_tools_and_apis"
+  },
+  {
+    "connector_group_id": "ef3c8fe4-2d84-43e4-8100-d445bfdb8484",
+    "description": "Collect insights through form or survey platforms",
+    "lucide_icon": "lucide-list-checks",
+    "name": "Survey & Forms",
+    "slug": "survey_and_forms"
+  },
+  {
+    "connector_group_id": "1c3e1eeb-1c58-4f68-9c77-f5e34c3cb0ae",
+    "description": "Connect your online store to synchronize orders, products, and customers",
+    "lucide_icon": "lucide-shopping-cart",
+    "name": "E-commerce Platforms",
+    "slug": "e_commerce_platforms"
+  },
+  {
+    "connector_group_id": "b5df7c31-714a-49ec-98a5-6a00a6f53f2a",
+    "description": "Connect to customer relationship management platforms",
+    "lucide_icon": "lucide-handshake",
+    "name": "CRM Systems",
+    "slug": "crm_systems"
+  },
+  {
+    "connector_group_id": "7123b91d-3f5e-4893-8b41-327c93a8c791",
+    "description": "Connect to cloud storage platforms",
+    "lucide_icon": "lucide-cloud",
+    "name": "Cloud Storage Platforms",
+    "slug": "cloud_storage_platforms"
+  },
+  {
+    "connector_group_id": "b228ca0f-7a60-4f68-996f-24015493db1a",
+    "description": "Connect to social networks for insights and automation",
+    "lucide_icon": "lucide-globe",
+    "name": "Social Media & Insights",
+    "slug": "social_media_and_insights"
+  },
+  {
+    "connector_group_id": "2e6d93c2-3f63-43e2-b7c4-13fdca2ccfea",
+    "description": "Connect email marketing and communication services",
+    "lucide_icon": "lucide-mail",
+    "name": "Email & Messaging",
+    "slug": "email_and_messaging"
+  },
+  {
+    "connector_group_id": "92d31a2c-54f4-4382-a0b0-4b3c3d05fa77",
+    "description": "Connect HR and employee engagement platforms",
+    "lucide_icon": "lucide-users",
+    "name": "Human Resources & Talent",
+    "slug": "human_resources_and_talent"
+  },
+  {
+    "connector_group_id": "788ad130-6f1d-49e3-baae-21b8785c12a7",
+    "description": "Connect your helpdesk and support platforms",
+    "lucide_icon": "lucide-headset",
+    "name": "Customer Support Tools",
+    "slug": "customer_support_tools"
+  },
+  {
+    "connector_group_id": "3e5df540-1c3b-4d4a-bb53-d2d9a2b3df0a",
+    "description": "Connect to your data warehouses and databases",
+    "lucide_icon": "lucide-database",
+    "name": "Databases",
+    "slug": "databases"
+  },
+  {
+    "connector_group_id": "e9798b4f-312a-4f88-b3ff-9ccf74f64855",
+    "description": "Integrate with cloud data warehouses",
+    "lucide_icon": "lucide-server",
+    "name": "Data Warehousing",
+    "slug": "data_warehousing"
+  },
+  {
+    "connector_group_id": "547bdcfa-c8a4-4128-a57e-3ffb0c79006e",
+    "description": "Connect to digital advertising platforms for campaign performance and metrics",
+    "lucide_icon": "lucide-megaphone",
+    "name": "Advertising Networks",
+    "slug": "advertising_networks"
+  },
+  {
+    "connector_group_id": "ac159e1f-e54d-41cb-9c13-9f5054c78e25",
+    "description": "Connect to your analytics and tracking platforms",
+    "lucide_icon": "lucide-activity",
+    "name": "Analytics Platforms",
+    "slug": "analytics_platforms"
+  }
+]
