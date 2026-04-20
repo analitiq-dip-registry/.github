@@ -1,27 +1,54 @@
 {
   "connectors": [
     {
+      "id": "",
       "slug": "pipedrive",
       "name": "Pipedrive",
+      "description": "Sales CRM and pipeline management platform for tracking deals, contacts, and sales activities.",
+      "category_id": "b5df7c31-714a-49ec-98a5-6a00a6f53f2a",
+      "image_link": "",
       "type": "api",
       "repo": "analitiq-dip-registry/pipedrive",
-      "version": "0.1.0"
+      "version": "1.0.0",
+      "versions": []
     },
     {
+      "id": "",
       "slug": "mysql",
       "name": "MySQL",
+      "description": "Open-source relational database management system (RDBMS) for structured data storage, querying, and management. Widely used for web applications, data warehouses, and transactional systems.",
+      "category_id": "3e5df540-1c3b-4d4a-bb53-d2d9a2b3df0a",
+      "image_link": "",
       "type": "database",
       "driver": "mysql",
       "repo": "analitiq-dip-registry/mysql",
-      "version": "0.1.0"
+      "version": "1.0.0",
+      "versions": []
     },
     {
+      "id": "",
       "slug": "postgres",
       "name": "PostgreSQL",
+      "description": "Open-source relational database management system (RDBMS) known for reliability, feature robustness, and performance. Supports advanced data types, full ACID compliance, and extensibility.",
+      "category_id": "3e5df540-1c3b-4d4a-bb53-d2d9a2b3df0a",
+      "image_link": "",
       "type": "database",
       "driver": "postgresql",
       "repo": "analitiq-dip-registry/postgres",
-      "version": "0.1.0"
+      "version": "0.0.1",
+      "versions": []
+    },
+    {
+      "id": "",
+      "slug": "wise",
+      "name": "Wise",
+      "description": "API connector for Wise (formerly TransferWise) international money transfer and multi-currency account platform.",
+      "category_id": "f4c68d34-61ed-4cf7-88a9-8fd4e96a7489",
+      "image_link": "",
+      "type": "api",
+      "repo": "analitiq-dip-registry/wise-api-key",
+      "version": "1.0.0",
+      "versions": []
     }
   ]
 }

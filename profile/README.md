@@ -1,5 +1,21 @@
 # Analitiq Data Integration Protocol Registry
 
+## How Analitiq works
+
+Analitiq is a set of open-source tools for connecting APIs, databases, and storage systems — no coding required.
+
+| Repository | What it does |
+|---|---|
+| **[AI Plugins](https://github.com/analitiq-ai/ai-plugins-official)** | Claude Code plugins that build connectors and pipelines through conversation. |
+| **[DIP Registry](https://github.com/analitiq-dip-registry)** *(this repo)* | Open catalog of ready-made connector definitions for common systems. |
+| **[Core Engine](https://github.com/analitiq-ai/analitiq-core)** | Runs the pipelines — reads from sources, transforms data, writes to destinations. |
+
+**Use the plugins** to create connectors and assemble pipelines. **Connectors** live in the registry. **The engine** executes the pipelines. Or skip the setup and use **[Analitiq Cloud](https://analitiq-app.com)** for a fully managed experience.
+
+Learn more at [analitiq.ai](https://analitiq.ai).
+
+---
+
 **If APIs and databases have standard interfaces, why can't we use AI to standardise how they talk to each other?**
 
 That's the question behind this project. Every API publishes documentation. Every database speaks SQL. The patterns are consistent -- authentication, pagination, filtering, schema discovery. Yet connecting systems still requires custom code, brittle scripts, and deep technical knowledge.
@@ -25,6 +41,12 @@ All connectors are listed as repositories in this organisation. The full registr
 
 ```
 https://raw.githubusercontent.com/analitiq-dip-registry/.github/main/registry.json
+```
+
+Connector categories are also available as machine-readable JSON:
+
+```
+https://raw.githubusercontent.com/analitiq-dip-registry/.github/main/categories.json
 ```
 
 ## Using Connectors
