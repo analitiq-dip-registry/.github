@@ -105,6 +105,18 @@
     },
     {
       "id": "",
+      "slug": "wise-api-key",
+      "name": "Wise (API Key)",
+      "description": "International money transfer and multi-currency account platform (formerly TransferWise)",
+      "category_id": "",
+      "image_link": "",
+      "type": "api",
+      "repo": "analitiq-dip-registry/wise-api-key",
+      "version": "0.2.4",
+      "versions": []
+    },
+    {
+      "id": "",
       "slug": "xero",
       "name": "Xero",
       "description": "Xero cloud accounting platform. Read accounting data — invoices, contacts, bank transactions, credit notes, payments, items, journals and more — via the Xero Accounting API (api.xro/2.0).",
