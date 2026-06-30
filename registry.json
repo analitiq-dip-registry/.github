@@ -92,6 +92,18 @@
     },
     {
       "id": "",
+      "slug": "sevdesk",
+      "name": "sevdesk",
+      "description": "Cloud-based accounting and invoicing platform for small businesses and freelancers in the DACH region.",
+      "category_id": "",
+      "image_link": "",
+      "type": "api",
+      "repo": "analitiq-dip-registry/sevdesk",
+      "version": "1.2.0",
+      "versions": []
+    },
+    {
+      "id": "",
       "slug": "snowflake",
       "name": "Snowflake",
       "description": "Snowflake cloud data warehouse connector using the native ADBC Snowflake driver with standard username and password authentication over TLS.",
