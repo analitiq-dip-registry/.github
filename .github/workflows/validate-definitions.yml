@@ -3,6 +3,10 @@ name: Validate Definitions (reusable)
 # Central validation for all analitiq-dip-registry connector repos.
 # Each repo references this via a thin caller (stub) workflow; the logic lives here only.
 # on: workflow_call means this file never runs on its own — it is inert until a caller invokes it.
+#
+# Kept byte-for-byte in step with the two-layer merge gate (Layer 1 schema shape +
+# Layer 2 semantic validation, added in .template#19). Update here once; every caller
+# picks it up on its next PR run.
 on:
   workflow_call:
 
@@ -30,8 +34,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .schemas
-          curl -sSfL https://schemas.analitiq.ai/connector/latest.json        -o .schemas/connector.json
-          curl -sSfL https://schemas.analitiq.ai/api-endpoint/latest.json      -o .schemas/api-endpoint.json
+          curl -sSfL https://schemas.analitiq.ai/connector/latest.json      -o .schemas/connector.json
+          curl -sSfL https://schemas.analitiq.ai/api-endpoint/latest.json   -o .schemas/api-endpoint.json
           curl -sSfL https://schemas.analitiq.ai/database-endpoint/latest.json -o .schemas/database-endpoint.json
           for f in .schemas/*.json; do
             ACTUAL_ID=$(jq -r '."$id"' "$f")
@@ -87,4 +91,56 @@ jobs:
           for f in "${ENDPOINTS[@]}"; do
             echo "--- $f ---"
             check-jsonschema --schemafile "$TYPE_SCHEMA" "$f"
+          done
+
+      # Layer 2 — semantic validators (type-map-coverage, expression-resolver,
+      # auth-shape, tls-consistency, endpoint-annotations, …). check-jsonschema
+      # above only covers Layer 1 (JSON Schema shape); it cannot catch a
+      # connector whose endpoints reference native types its read map doesn't
+      # resolve — the defect that shipped `sevdesk` broken. This installs the
+      # plugin's validator as a pinned, standalone package and runs Layer 2.
+      - name: Install Layer 2 semantic validator
+        run: pip install "analitiq-connector-validator @ git+https://github.com/analitiq-ai/claude-plugin-connector.git@validator-v0.1.0#subdirectory=validator"
+
+      - name: Validate semantic rules (Layer 2)
+        run: |
+          set -euo pipefail
+
+          # --semantic-only skips the Layer 1 schema *fetch*, so this step needs
+          # no network and no schema host; Layer 2 is pure local analysis.
+          #
+          # Run only when there is a real definition to check. An unconfigured
+          # template scaffold (no endpoints AND no read map) has nothing to
+          # cover, so skip it — mirroring the Layer 1 endpoint step's
+          # skip-when-empty behaviour. A real api connector has endpoints; a
+          # real database connector has type-map-read.json; either triggers the
+          # full pass.
+          ENDPOINTS=()
+          if [ -d definition/endpoints ]; then
+            mapfile -d '' -t ENDPOINTS < <(find definition/endpoints -name "*.json" -type f -print0)
+          fi
+
+          if [ "${#ENDPOINTS[@]}" -eq 0 ] && [ ! -f definition/type-map-read.json ]; then
+            echo "No endpoints and no type-map-read.json — unconfigured template scaffold; skipping Layer 2."
+            exit 0
+          fi
+
+          # Coverage is anchored on the connector: it discovers the sibling
+          # type-map-read.json and endpoints/ from definition/ and fails if an
+          # endpoint native is unresolved by the read map.
+          echo "--- definition/connector.json ---"
+          analitiq-validate-connector --document definition/connector.json --semantic-only
+
+          # Type-map rule checks (read always; write for database connectors).
+          for m in definition/type-map-read.json definition/type-map-write.json; do
+            if [ -f "$m" ]; then
+              echo "--- $m ---"
+              analitiq-validate-connector --document "$m" --semantic-only
+            fi
+          done
+
+          # Per-endpoint annotation checks.
+          for ep in "${ENDPOINTS[@]}"; do
+            echo "--- $ep ---"
+            analitiq-validate-connector --document "$ep" --semantic-only
           done
