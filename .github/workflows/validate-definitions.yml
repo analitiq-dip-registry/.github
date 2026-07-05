@@ -4,9 +4,10 @@ name: Validate Definitions (reusable)
 # Each repo references this via a thin caller (stub) workflow; the logic lives here only.
 # on: workflow_call means this file never runs on its own — it is inert until a caller invokes it.
 #
-# Kept byte-for-byte in step with the two-layer merge gate (Layer 1 schema shape +
-# Layer 2 semantic validation, added in .template#19). Update here once; every caller
-# picks it up on its next PR run.
+# Mirrors the two-layer merge gate (Layer 1 schema shape + Layer 2 semantic validation,
+# .template#19). Update here once; every caller picks it up on its next PR run.
+# Layer 2 intentionally tracks the validator repo's main (not a pinned tag) so validator
+# releases auto-roll-out to every DIP PR with no bump here — see the Layer 2 step below.
 on:
   workflow_call:
 
@@ -97,10 +98,14 @@ jobs:
       # auth-shape, tls-consistency, endpoint-annotations, …). check-jsonschema
       # above only covers Layer 1 (JSON Schema shape); it cannot catch a
       # connector whose endpoints reference native types its read map doesn't
-      # resolve — the defect that shipped `sevdesk` broken. This installs the
-      # plugin's validator as a pinned, standalone package and runs Layer 2.
+      # resolve — the defect that shipped `sevdesk` broken.
+      #
+      # Ref is @main (not a pinned tag): every install pulls the validator repo's
+      # current main, so upstream validator updates roll out to all DIP PRs with no
+      # bump here. Trade-off: a broken commit on the validator's main blocks the merge
+      # gate on every DIP PR until it is fixed upstream.
       - name: Install Layer 2 semantic validator
-        run: pip install "analitiq-connector-validator @ git+https://github.com/analitiq-ai/claude-plugin-connector.git@validator-v0.1.0#subdirectory=validator"
+        run: pip install "analitiq-connector-validator @ git+https://github.com/analitiq-ai/claude-plugin-connector.git@main#subdirectory=validator"
 
       - name: Validate semantic rules (Layer 2)
         run: |
