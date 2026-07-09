@@ -74,7 +74,7 @@
       "type": "database",
       "driver": "postgresql+asyncpg",
       "repo": "analitiq-dip-registry/postgres",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "versions": []
     },
     {
