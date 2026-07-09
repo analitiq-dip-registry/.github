@@ -6,8 +6,8 @@ name: Validate Definitions (reusable)
 #
 # Mirrors the two-layer merge gate (Layer 1 schema shape + Layer 2 semantic validation,
 # .template#19). Update here once; every caller picks it up on its next PR run.
-# Layer 2 intentionally tracks the validator repo's main (not a pinned tag) so validator
-# releases auto-roll-out to every DIP PR with no bump here — see the Layer 2 step below.
+# Layer 2 pins an exact validator release from PyPI (analitiq-validator); bump the pin in
+# the Layer 2 install step below to roll a new validator out to every DIP PR.
 on:
   workflow_call:
 
@@ -100,19 +100,19 @@ jobs:
       # connector whose endpoints reference native types its read map doesn't
       # resolve — the defect that shipped `sevdesk` broken.
       #
-      # Ref is @main (not a pinned tag): every install pulls the validator repo's
-      # current main, so upstream validator updates roll out to all DIP PRs with no
-      # bump here. Trade-off: a broken commit on the validator's main blocks the merge
-      # gate on every DIP PR until it is fixed upstream.
+      # Pinned to an exact PyPI pre-release (analitiq-validator). --pre is required
+      # because 1.0.0rc1 is a pre-release. To roll a new validator out to every DIP
+      # PR, bump this version pin; the exact pin keeps the merge gate reproducible.
       - name: Install Layer 2 semantic validator
-        run: pip install "analitiq-connector-validator @ git+https://github.com/analitiq-ai/claude-plugin-connector.git@main#subdirectory=validator"
+        run: python3 -m pip install --pre "analitiq-validator==1.0.0rc1"
 
       - name: Validate semantic rules (Layer 2)
         run: |
           set -euo pipefail
 
-          # --semantic-only skips the Layer 1 schema *fetch*, so this step needs
-          # no network and no schema host; Layer 2 is pure local analysis.
+          # Layer 2 needs no network and no schema host — validation is model-driven
+          # and fully offline. (--semantic-only is retained on the calls below only for
+          # backward compatibility; the current validator ignores it and is always offline.)
           #
           # Run only when there is a real definition to check. An unconfigured
           # template scaffold (no endpoints AND no read map) has nothing to
@@ -134,18 +134,18 @@ jobs:
           # type-map-read.json and endpoints/ from definition/ and fails if an
           # endpoint native is unresolved by the read map.
           echo "--- definition/connector.json ---"
-          analitiq-validate-connector --document definition/connector.json --semantic-only
+          analitiq-validate --document definition/connector.json --semantic-only
 
           # Type-map rule checks (read always; write for database connectors).
           for m in definition/type-map-read.json definition/type-map-write.json; do
             if [ -f "$m" ]; then
               echo "--- $m ---"
-              analitiq-validate-connector --document "$m" --semantic-only
+              analitiq-validate --document "$m" --semantic-only
             fi
           done
 
           # Per-endpoint annotation checks.
           for ep in "${ENDPOINTS[@]}"; do
             echo "--- $ep ---"
-            analitiq-validate-connector --document "$ep" --semantic-only
+            analitiq-validate --document "$ep" --semantic-only
           done
