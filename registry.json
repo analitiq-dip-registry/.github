@@ -99,7 +99,7 @@
       "image_link": "",
       "type": "api",
       "repo": "analitiq-dip-registry/sevdesk",
-      "version": "2.0.0",
+      "version": "3.0.0",
       "versions": []
     },
     {
@@ -112,7 +112,7 @@
       "type": "database",
       "driver": "snowflake",
       "repo": "analitiq-dip-registry/snowflake",
-      "version": "0.0.3",
+      "version": "0.2.0",
       "versions": []
     },
     {
