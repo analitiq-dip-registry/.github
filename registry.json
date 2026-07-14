@@ -112,7 +112,7 @@
       "type": "database",
       "driver": "snowflake",
       "repo": "analitiq-dip-registry/snowflake",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "versions": []
     },
     {
