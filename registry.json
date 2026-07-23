@@ -55,13 +55,13 @@
       "id": "",
       "slug": "mysql",
       "name": "MySQL",
-      "description": "Open-source relational database management system for structured data storage, querying, and management",
+      "description": "MySQL open-source relational database. Connects over the MySQL wire protocol via the async SQLAlchemy mysql+aiomysql dialect for structured data storage, querying, runtime table discovery, and DDL/write-back.",
       "category_id": "",
       "image_link": "",
       "type": "database",
       "driver": "mysql+aiomysql",
       "repo": "analitiq-dip-registry/mysql",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "versions": []
     },
     {
