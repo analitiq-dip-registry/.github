@@ -4,13 +4,13 @@
       "id": "",
       "slug": "bigquery",
       "name": "Google BigQuery",
-      "description": "Google BigQuery serverless data warehouse, accessed over the ADBC BigQuery driver. Authenticates with a service-account JSON key (default) or an OAuth user-credential flow; all connection state is passed via adbc.bigquery.* driver options.",
+      "description": "Google BigQuery serverless data warehouse. Connects, discovers, and reads over the first-class ADBC BigQuery driver; writes land as Parquet load jobs via the BigQuery API (direct media upload, no GCS staging bucket). Authenticates with a service-account JSON key (default) or an OAuth user-credential flow; all connection state is passed via adbc.bigquery.sql.* driver options.",
       "category_id": "",
       "image_link": "",
       "type": "database",
       "driver": "bigquery",
       "repo": "analitiq-dip-registry/bigquery",
-      "version": "0.0.1",
+      "version": "1.0.0",
       "versions": []
     },
     {
@@ -61,7 +61,7 @@
       "type": "database",
       "driver": "mysql+aiomysql",
       "repo": "analitiq-dip-registry/mysql",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "versions": []
     },
     {
