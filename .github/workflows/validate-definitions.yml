@@ -6,8 +6,9 @@ name: Validate Definitions (reusable)
 #
 # Mirrors the two-layer merge gate (Layer 1 schema shape + Layer 2 semantic validation,
 # .template#19). Update here once; every caller picks it up on its next PR run.
-# Layer 2 pins an exact validator release from PyPI (analitiq-validator); bump the pin in
-# the Layer 2 install step below to roll a new validator out to every DIP PR.
+# Layer 2 pins exact PyPI releases (analitiq-validator + analitiq-contract-models,
+# kept on the same release); bump both pins in the Layer 2 install step below to
+# roll a new validator out to every DIP PR.
 on:
   workflow_call:
 
@@ -100,11 +101,16 @@ jobs:
       # connector whose endpoints reference native types its read map doesn't
       # resolve — the defect that shipped `sevdesk` broken.
       #
-      # Pinned to an exact PyPI pre-release (analitiq-validator). --pre is required
-      # because 1.0.0rc1 is a pre-release. To roll a new validator out to every DIP
-      # PR, bump this version pin; the exact pin keeps the merge gate reproducible.
+      # Pinned to an exact PyPI pre-release. --pre is required because these are
+      # pre-releases. analitiq-contract-models is co-pinned to the SAME release as
+      # analitiq-validator: the validator imports the contract models, and leaving
+      # the models unpinned lets pip float them to a newer pre-release whose shape
+      # the pinned validator can't import (e.g. rc1 validator + rc13 models →
+      # "cannot import name 'ConnectorConfig'"). To roll a new validator out to
+      # every DIP PR, bump BOTH pins together; the exact pins keep the merge gate
+      # reproducible.
       - name: Install Layer 2 semantic validator
-        run: python3 -m pip install --pre "analitiq-validator==1.0.0rc1"
+        run: python3 -m pip install --pre "analitiq-validator==1.0.0rc13" "analitiq-contract-models==1.0.0rc13"
 
       - name: Validate semantic rules (Layer 2)
         run: |
