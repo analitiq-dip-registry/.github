@@ -10,7 +10,7 @@
       "type": "database",
       "driver": "bigquery",
       "repo": "analitiq-dip-registry/bigquery",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "versions": []
     },
     {
