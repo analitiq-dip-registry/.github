@@ -68,13 +68,13 @@
       "id": "",
       "slug": "postgres",
       "name": "PostgreSQL",
-      "description": "Open-source relational database management system known for reliability, feature robustness, and performance",
+      "description": "PostgreSQL database connector. Reads and writes Arrow data over the first-class ADBC libpq driver (COPY-based bulk ingestion) as the default transport, with an async SQLAlchemy (asyncpg) transport as the engine-side SQL path. Username/password authentication, libpq TLS modes (disable through verify-full), and table/view discovery via information_schema.",
       "category_id": "",
       "image_link": "",
       "type": "database",
-      "driver": "postgresql+asyncpg",
+      "driver": "postgresql",
       "repo": "analitiq-dip-registry/postgres",
-      "version": "0.1.2",
+      "version": "1.0.0",
       "versions": []
     },
     {
