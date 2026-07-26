@@ -110,7 +110,7 @@ jobs:
       # every DIP PR, bump BOTH pins together; the exact pins keep the merge gate
       # reproducible.
       - name: Install Layer 2 semantic validator
-        run: python3 -m pip install --pre "analitiq-validator==1.0.0rc13" "analitiq-contract-models==1.0.0rc13"
+        run: python3 -m pip install --pre "analitiq-validator==1.0.0rc17" "analitiq-contract-models==1.0.0rc17"
 
       - name: Validate semantic rules (Layer 2)
         run: |
