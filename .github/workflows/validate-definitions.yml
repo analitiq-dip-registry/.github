@@ -6,9 +6,9 @@ name: Validate Definitions (reusable)
 #
 # Mirrors the two-layer merge gate (Layer 1 schema shape + Layer 2 semantic validation,
 # .template#19). Update here once; every caller picks it up on its next PR run.
-# Layer 2 pins exact PyPI releases (analitiq-validator + analitiq-contract-models,
-# kept on the same release); bump both pins in the Layer 2 install step below to
-# roll a new validator out to every DIP PR.
+# Layer 2 installs exact PyPI releases of analitiq-validator + analitiq-contract-models,
+# both taken from the VALIDATOR_VERSION job env below; roll a new validator out to every
+# DIP PR by setting the org variable, not by editing this file.
 on:
   workflow_call:
 
@@ -22,6 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # Single source of truth for the Layer 2 validator release. GitHub evaluates `vars`
+      # in a reusable workflow against the CALLER's repo, so precedence here is:
+      # caller repo variable > org variable > the literal below. Roll a new validator out
+      # org-wide by setting the org variable VALIDATOR_VERSION; a repo that must stay on
+      # an older validator sets a repo variable of the same name, which shadows the org
+      # value for that repo only. No repo variable = follow the org — never seed one at
+      # repo-creation time, or that repo silently stops tracking org-wide bumps.
+      #
+      # The literal is a last-known-good floor, NOT a mirror of the org variable. PRs from
+      # forks receive no org or repo variables at all, and an unset `vars` entry expands to
+      # an empty string, which would make the pip spec below invalid and fail every outside
+      # contributor's PR. Bump it occasionally, not on every rc. Consequence to know about:
+      # on a repo deliberately held back by a repo variable, fork PRs validate against this
+      # floor rather than that repo's pin.
+      VALIDATOR_VERSION: ${{ vars.VALIDATOR_VERSION || '1.0.0rc17' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -102,15 +118,24 @@ jobs:
       # resolve — the defect that shipped `sevdesk` broken.
       #
       # Pinned to an exact PyPI pre-release. --pre is required because these are
-      # pre-releases. analitiq-contract-models is co-pinned to the SAME release as
+      # pre-releases. analitiq-contract-models is installed at the SAME release as
       # analitiq-validator: the validator imports the contract models, and leaving
       # the models unpinned lets pip float them to a newer pre-release whose shape
       # the pinned validator can't import (e.g. rc1 validator + rc13 models →
-      # "cannot import name 'ConnectorConfig'"). To roll a new validator out to
-      # every DIP PR, bump BOTH pins together; the exact pins keep the merge gate
-      # reproducible.
+      # "cannot import name 'ConnectorConfig'"). Deriving both from the single
+      # VALIDATOR_VERSION env above makes that invariant structural rather than a
+      # thing to remember when bumping.
+      #
+      # The echo is deliberate: the version now lives in org/repo settings instead of
+      # in this file, so the run log is the only record of which validator release
+      # actually gated a given PR.
       - name: Install Layer 2 semantic validator
-        run: python3 -m pip install --pre "analitiq-validator==1.0.0rc17" "analitiq-contract-models==1.0.0rc17"
+        run: |
+          set -euo pipefail
+          echo "Layer 2 validator: ${VALIDATOR_VERSION}"
+          python3 -m pip install --pre \
+            "analitiq-validator==${VALIDATOR_VERSION}" \
+            "analitiq-contract-models==${VALIDATOR_VERSION}"
 
       - name: Validate semantic rules (Layer 2)
         run: |
