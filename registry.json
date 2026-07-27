@@ -131,12 +131,12 @@
       "id": "",
       "slug": "xero",
       "name": "Xero",
-      "description": "Xero cloud accounting platform. Read accounting data — invoices, contacts, bank transactions, credit notes, payments, items, journals and more — via the Xero Accounting API (api.xro/2.0).",
+      "description": "Xero cloud accounting platform. Reads and writes accounting data — invoices, credit notes, contacts, bank transactions, payments, items, accounts, manual journals, the general ledger and organisation settings — via the Xero Accounting API (api.xro/2.0). OAuth 2.0 authorization code with granular accounting scopes and refresh-token rotation; each connection targets exactly one Xero organisation (tenant), selected after authorisation from GET /connections.",
       "category_id": "",
       "image_link": "",
       "type": "api",
       "repo": "analitiq-dip-registry/xero",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "versions": []
     },
     {
