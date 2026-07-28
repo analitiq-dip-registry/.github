@@ -4,11 +4,11 @@ name: Validate Definitions (reusable)
 # Each repo references this via a thin caller (stub) workflow; the logic lives here only.
 # on: workflow_call means this file never runs on its own — it is inert until a caller invokes it.
 #
-# Mirrors the two-layer merge gate (Layer 1 schema shape + Layer 2 semantic validation,
-# .template#19). Update here once; every caller picks it up on its next PR run.
-# Layer 2 installs exact PyPI releases of analitiq-validator + analitiq-contract-models,
-# both taken from the VALIDATOR_VERSION job env below; roll a new validator out to every
-# DIP PR by setting the org variable, not by editing this file.
+# analitiq-validate is the merge gate (.template#19): model-driven, covering both
+# document shape and semantic rules, offline. Update here once; every caller picks it
+# up on its next PR run. The job installs exact PyPI releases of analitiq-validator +
+# analitiq-contract-models, both taken from the VALIDATOR_VERSION job env below; roll a
+# new validator out to every DIP PR by setting the org variable, not by editing this file.
 on:
   workflow_call:
 
@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: read
     env:
-      # Single source of truth for the Layer 2 validator release. GitHub evaluates `vars`
+      # Single source of truth for the validator release. GitHub evaluates `vars`
       # in a reusable workflow against the CALLER's repo, so precedence here is:
       # caller repo variable > org variable > the literal below. Roll a new validator out
       # org-wide by setting the org variable VALIDATOR_VERSION; a repo that must stay on
@@ -45,77 +45,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install check-jsonschema
-        run: pip install 'check-jsonschema==0.29.4'
-
-      - name: Fetch schemas
-        run: |
-          set -euo pipefail
-          mkdir -p .schemas
-          curl -sSfL https://schemas.analitiq.ai/connector/latest.json      -o .schemas/connector.json
-          curl -sSfL https://schemas.analitiq.ai/api-endpoint/latest.json   -o .schemas/api-endpoint.json
-          curl -sSfL https://schemas.analitiq.ai/database-endpoint/latest.json -o .schemas/database-endpoint.json
-          for f in .schemas/*.json; do
-            ACTUAL_ID=$(jq -r '."$id"' "$f")
-            EXPECTED_ID="https://schemas.analitiq.ai/$(basename "$f" .json)/latest.json"
-            if [ "$ACTUAL_ID" != "$EXPECTED_ID" ]; then
-              echo "ERROR: $f returned schema with \$id=$ACTUAL_ID (expected $EXPECTED_ID)"
-              exit 1
-            fi
-          done
-
-      - name: Validate connector.json
-        run: |
-          set -euo pipefail
-          if [ ! -f definition/connector.json ]; then
-            echo "ERROR: definition/connector.json is missing."
-            exit 1
-          fi
-          check-jsonschema \
-            --schemafile .schemas/connector.json \
-            definition/connector.json
-
-      - name: Validate endpoints
-        run: |
-          set -euo pipefail
-
-          if [ ! -d definition/endpoints ]; then
-            echo "No definition/endpoints/ directory — skipping endpoint validation."
-            exit 0
-          fi
-
-          mapfile -d '' -t ENDPOINTS < <(find definition/endpoints -name "*.json" -type f -print0)
-
-          if [ "${#ENDPOINTS[@]}" -eq 0 ]; then
-            echo "No endpoint files found — skipping."
-            exit 0
-          fi
-
-          CONNECTOR_KIND=$(jq -r '.kind' definition/connector.json)
-          if [ -z "$CONNECTOR_KIND" ] || [ "$CONNECTOR_KIND" = "null" ]; then
-            echo "ERROR: .kind is missing or null in definition/connector.json"
-            exit 1
-          fi
-
-          case "$CONNECTOR_KIND" in
-            api)      TYPE_SCHEMA=".schemas/api-endpoint.json" ;;
-            database) TYPE_SCHEMA=".schemas/database-endpoint.json" ;;
-            *)
-              echo "Unknown connector kind: '$CONNECTOR_KIND'"
-              exit 1
-              ;;
-          esac
-
-          for f in "${ENDPOINTS[@]}"; do
-            echo "--- $f ---"
-            check-jsonschema --schemafile "$TYPE_SCHEMA" "$f"
-          done
-
-      # Layer 2 — semantic validators (type-map-coverage, expression-resolver,
-      # auth-shape, tls-consistency, endpoint-annotations, …). check-jsonschema
-      # above only covers Layer 1 (JSON Schema shape); it cannot catch a
-      # connector whose endpoints reference native types its read map doesn't
-      # resolve — the defect that shipped `sevdesk` broken.
+      # Contract-model shape checks plus the semantic validators (type-map-coverage,
+      # expression-resolver, auth-shape, tls-consistency, endpoint-annotations, …).
+      # The semantic pass is what catches a connector whose endpoints reference
+      # native types its read map doesn't resolve — the defect that shipped
+      # `sevdesk` broken.
       #
       # Pinned to an exact PyPI pre-release. --pre is required because these are
       # pre-releases. analitiq-contract-models is installed at the SAME release as
@@ -126,29 +60,36 @@ jobs:
       # VALIDATOR_VERSION env above makes that invariant structural rather than a
       # thing to remember when bumping.
       #
-      # The echo is deliberate: the version now lives in org/repo settings instead of
-      # in this file, so the run log is the only record of which validator release
+      # The echo is deliberate: the version lives in org/repo settings rather than in
+      # this file, so the run log is the only record of which validator release
       # actually gated a given PR.
-      - name: Install Layer 2 semantic validator
+      - name: Install validator
         run: |
           set -euo pipefail
-          echo "Layer 2 validator: ${VALIDATOR_VERSION}"
+          echo "Validator: ${VALIDATOR_VERSION}"
           python3 -m pip install --pre \
             "analitiq-validator==${VALIDATOR_VERSION}" \
             "analitiq-contract-models==${VALIDATOR_VERSION}"
 
-      - name: Validate semantic rules (Layer 2)
+      - name: Validate definitions
         run: |
           set -euo pipefail
 
-          # Layer 2 needs no network and no schema host — validation is model-driven
-          # and fully offline. (--semantic-only is retained on the calls below only for
-          # backward compatibility; the current validator ignores it and is always offline.)
+          # Validation needs no network and no schema host — it is model-driven
+          # and fully offline. (--semantic-only on the calls below is a no-op for the
+          # current validator, which is always offline; it is kept for compatibility
+          # with validator releases that still parse it.)
           #
-          # Run only when there is a real definition to check. An unconfigured
-          # template scaffold (no endpoints AND no read map) has nothing to
-          # cover, so skip it — mirroring the Layer 1 endpoint step's
-          # skip-when-empty behaviour. A real api connector has endpoints; a
+          # connector.json is mandatory in every repo, scaffold included, so this
+          # check sits outside the skip below.
+          if [ ! -f definition/connector.json ]; then
+            echo "ERROR: definition/connector.json is missing."
+            exit 1
+          fi
+
+          # Run the rule pass only when there is a real definition to check. An
+          # unconfigured template scaffold (no endpoints AND no read map) has
+          # nothing to cover, so skip it. A real api connector has endpoints; a
           # real database connector has type-map-read.json; either triggers the
           # full pass.
           ENDPOINTS=()
@@ -157,7 +98,7 @@ jobs:
           fi
 
           if [ "${#ENDPOINTS[@]}" -eq 0 ] && [ ! -f definition/type-map-read.json ]; then
-            echo "No endpoints and no type-map-read.json — unconfigured template scaffold; skipping Layer 2."
+            echo "No endpoints and no type-map-read.json — unconfigured template scaffold; skipping rule pass."
             exit 0
           fi
 
