@@ -170,6 +170,13 @@ jobs:
       # Whether that job's pip resolution includes this repo — "is there a package
       # to install?". Only meaningful when `run` is 'true'.
       install_self: ${{ steps.gate.outputs.install_self }}
+      # Whether this repo ships a connector class of its own — "should the suite be
+      # auditing repo code, or the CDK's stand-in for it?". Only meaningful when
+      # `run` is 'true'. Distinct from install_self: a package can carry nothing but
+      # dependencies (.github#14), and a repo that declares a class necessarily
+      # declares a package, so the pair is (false,false), (true,false) or (true,true)
+      # — never (false,true).
+      claims_class: ${{ steps.gate.outputs.claims_class }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -187,12 +194,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Two questions, answered separately (.github#11):
+          # Three questions, answered separately (.github#11, .github#12):
           #
           #   run          — can the kit assess a connector of this KIND at all?
           #                  Answered by `kind` in definition/connector.json.
           #   install_self — is there a package to add to the CDK's pip resolution?
           #                  Answered by the `[project]` table in pyproject.toml.
+          #   claims_class — does this repo ship a connector class of its own?
+          #                  Answered by its entry-point declaration.
           #
           # Keying `run` on the package instead skips every thin connector, which is
           # what .github#11 is. A `kind: database` repo that ships no class of its
@@ -210,12 +219,14 @@ jobs:
           # ships-Python check below is what turns that into a red, which is why it
           # globs rather than testing a path.
           #
-          # In the other direction `"project" in ...` is true for a pyproject whose
-          # only project table is `[project.entry-points."…"]` — tomllib materialises
-          # the implicit parent — so such a repo is called packaged and `pip install .`
-          # goes red on the missing name/version. Red on a pyproject.toml that is
-          # genuinely invalid under PEP 621 is the right end of that trade; the message
-          # just comes from pip rather than from here.
+          # In the other direction a pyproject whose only project table is
+          # `[project.entry-points."…"]` still reads as packaged — tomllib materialises
+          # the implicit parent — so `pip install .` goes red on the missing
+          # name/version. Red on a pyproject.toml that is genuinely invalid under PEP
+          # 621 is the right end of that trade; the message just comes from pip rather
+          # than from here. That same materialisation is what makes claims_class imply
+          # install_self: entry points cannot be declared without a `[project]` table
+          # existing to hold them.
           #
           # -P, because a `run:` step's cwd is the PR's own checkout and `python3 -`
           # would otherwise put it on sys.path: a root-level json.py or tomllib.py
@@ -254,6 +265,15 @@ jobs:
           # self-reporting — a kind this gate admits that the kit cannot assess fails
           # test_a_check_applies_to_this_connector_kind (analitiq-engine#414) red.
           ASSESSABLE_KINDS = {"database"}
+
+          # The groups cdk/conformance/target.py resolves a connector class through,
+          # and the same two the engine registry uses. A repo declaring neither ships
+          # no class the kit can find, whatever Python it contains — which is why this,
+          # and not a path, is what "ships a connector class" means here (.github#12).
+          CONNECTOR_ENTRY_POINT_GROUPS = {
+              "analitiq.source_connectors",
+              "analitiq.destination_connectors",
+          }
 
           def emit(name, value):
               with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
@@ -323,13 +343,17 @@ jobs:
                   f"'Database' and 'database ' are not 'database'.)"
               )
 
+          # One file, read once, answering the two packaging questions above. They were
+          # a single signal until .github#12, and the answer to the second one was the
+          # presence of a file literally named connector.py at the repo root — a filing
+          # convention rather than anything production resolves on, wrong in the silent
+          # direction for any repo that keeps its class somewhere else.
           pyproject = root / "pyproject.toml"
           declares_package = False
+          claims_class = False
           if pyproject.is_file():
               try:
-                  declares_package = "project" in tomllib.loads(
-                      pyproject.read_text(encoding="utf-8")
-                  )
+                  data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
               except (tomllib.TOMLDecodeError, UnicodeDecodeError) as err:
                   # Unparseable is a defect, not an absence. Falling through would turn
                   # a broken package declaration into a run that audits CDK code.
@@ -341,21 +365,51 @@ jobs:
                       )
                   sys.exit(f"pyproject.toml is present but does not parse: {err}{hint}")
 
-          # Shipping connector code while declaring no installable package is a broken
-          # connector, not a thin one: the engine resolves the class through an entry
-          # point that only an installed package provides. Without this, a PR that
-          # deletes or breaks pyproject.toml would silently convert an audited
+              project = data.get("project")
+              declares_package = project is not None
+              # Guarded, because `project = "x"` parses as TOML and would otherwise
+              # raise here rather than at the pip install that should reject it.
+              if isinstance(project, dict):
+                  # GROUP presence, not "a name in that group equals connector_id".
+                  # A repo whose entry point is misnamed still claims a class, and
+                  # finding that the kit could not resolve it is the verify step's
+                  # whole job. Matching on the name here would answer "no class" for
+                  # precisely the typo that step exists to catch, route it to the thin
+                  # branch, and pass it green — the silent direction .github#12 is
+                  # about, reintroduced one layer up.
+                  entry_points = project.get("entry-points")
+                  groups = entry_points.keys() if isinstance(entry_points, dict) else ()
+                  # `dynamic = ["entry-points"]` is PEP 621 for "the build backend
+                  # supplies these" (setuptools reads them from a file), so there is no
+                  # table to look in and a literal read says no class. Counted as a
+                  # claim: the alternative is a thin verdict for a repo that then
+                  # resolves its own class, which the verify step reports as "something
+                  # installed a class this job did not" — red either way, but aimed at
+                  # the wrong thing.
+                  dynamic = project.get("dynamic")
+                  dynamic_fields = dynamic if isinstance(dynamic, list) else ()
+                  claims_class = (
+                      any(group in CONNECTOR_ENTRY_POINT_GROUPS for group in groups)
+                      or "entry-points" in dynamic_fields
+                  )
+
+          # Shipping connector code while declaring no way to reach it is a broken
+          # connector, not a thin one: the engine and the kit both resolve the class
+          # through an entry point, which needs an installed package to carry it AND a
+          # declaration to name it. Missing either, the repo's class is unreachable and
+          # GenericSQLConnector stands in — so without this check a PR that deletes
+          # pyproject.toml, or drops its entry-point table, silently converts an audited
           # connector into one audited through the CDK's generic fallback. Checked for
           # every kind, since the packaging contract does not depend on the kind.
           #
-          # This is the check that makes "no [project] table" mean "thin" rather than
-          # "unpackaged", so it must not key on a path. Keying it on `connector.py`
-          # misses a src/ layout; keying it on root + src/ still misses a flat package
-          # directory. Either way the repo ships real connector code, the gate calls it
-          # thin, the suite audits GenericSQLConnector, and the two class-level checks
-          # pass vacuously — a green certifying CDK code. That is .github#12, and
-          # widening the gate to admit thin repos is what turns it from a silent skip
-          # into a silent pass.
+          # This is the check that makes `claims_class` false mean "thin" rather than
+          # "broken", so it must not key on a path. Keying it on `connector.py` misses a
+          # src/ layout; keying it on root + src/ still misses a flat package directory.
+          # Either way the repo ships real connector code, the gate calls it thin, the
+          # suite audits GenericSQLConnector, and the two class-level checks pass
+          # vacuously — a green certifying CDK code. That is .github#12, and widening
+          # the gate to admit thin repos is what turns it from a silent skip into a
+          # silent pass.
           #
           # So: any .py anywhere. There is no layout-shaped answer here — setuptools
           # auto-discovery covers root and src/, but a backend configured to build
@@ -368,13 +422,33 @@ jobs:
               for path in root.rglob("*.py")
               if ".git" not in path.relative_to(root).parts
           )
-          if sources and not declares_package:
+          if sources and not claims_class:
+              shown = ", ".join(sources[:5]) + (" …" if len(sources) > 5 else "")
+              # Two ways to be unreachable, one red each, because the remedies differ.
+              # The declared-package branch is the one .github#12 adds: before it, such
+              # a repo reached the verify step and failed there for resolving the
+              # generic class, which is the same verdict from further away. Keying the
+              # thin branch on the entry-point declaration without this would have
+              # turned that red into a green.
+              if declares_package:
+                  sys.exit(
+                      f"this repo ships Python ({shown}) and declares a package, but "
+                      f"declares no connector entry point. A connector class is "
+                      f"reachable only through an entry point named for connector_id in "
+                      f"analitiq.source_connectors / analitiq.destination_connectors — "
+                      f"that is how the engine and tier-1 conformance both find it, and "
+                      f"a repo without one is audited as though it had no class at all. "
+                      f"Declare it in pyproject.toml. If this Python is not connector "
+                      f"code it has to move instead: nothing here can tell the "
+                      f"difference. This check runs at every kind, including the ones "
+                      f"tier 1 does not assess — which is why you can be failing it on "
+                      f"a repo whose conformance run is skipped."
+                  )
               detail = (
                   "pyproject.toml declares no [project] table"
                   if pyproject.is_file()
                   else "there is no pyproject.toml"
               )
-              shown = ", ".join(sources[:5]) + (" …" if len(sources) > 5 else "")
               sys.exit(
                   f"this repo ships Python ({shown}) but {detail}. A connector that "
                   f"ships Python must declare an installable package in pyproject.toml "
@@ -440,26 +514,38 @@ jobs:
               emit("run", "false")
               sys.exit(0)
 
-          # Assessable kind. The package decides only WHAT gets installed: a packaged
-          # connector adds `.` to the single pip resolution so its own class and driver
-          # requirements are importable; a thin one installs the CDK alone and is
-          # audited through GenericSQLConnector.
+          # Assessable kind. The two packaging signals answer different questions and
+          # are emitted separately. The package decides only WHAT gets installed: a
+          # packaged connector adds `.` to the single pip resolution so its own class
+          # and driver requirements are importable; a thin one installs the CDK alone.
+          # The entry-point declaration decides WHICH class the run should then have
+          # resolved — the repo's own, or GenericSQLConnector standing in for it.
+          #
+          # They coincide across the catalogue today, and come apart for a repo that
+          # packages dependencies without shipping a class: the shape .github#14 needs,
+          # where a thin `kind: database` connector declares the SQLAlchemy dialect its
+          # driver requires. Keying the verify step on `install_self` would fail that
+          # repo for correctly resolving the CDK's generic class.
           emit("run", "true")
           emit("install_self", "true" if declares_package else "false")
-          if not declares_package:
+          emit("claims_class", "true" if claims_class else "false")
+          if not claims_class:
               # ::notice:: rather than a bare print. A thin connector's green is a
               # materially narrower assurance than a packaged one's, and nothing on
               # the checks list would otherwise distinguish them — the caveat cannot
               # live only in a log line and a summary nobody opens.
               print(
-                  f"::notice::Thin connector (kind={kind!r}, no [project] table): the "
-                  f"CDK's GenericSQLConnector stands in for the connector class, so "
-                  f"this run is a materially narrower assurance. See the job summary."
+                  f"::notice::Thin connector (kind={kind!r}, no connector entry point "
+                  f"declared): the CDK's GenericSQLConnector stands in for the "
+                  f"connector class, so this run is a materially narrower assurance. "
+                  f"See the job summary."
               )
               summary(
                   f"### Tier-1 conformance: thin connector\n\n"
-                  f"This repo declares no Python package, so the suite audits the "
-                  f"CDK's `GenericSQLConnector` in place of a class of its own. A "
+                  f"This repo declares no connector entry point in "
+                  f"`analitiq.source_connectors` / `analitiq.destination_connectors`, "
+                  f"so the suite audits the CDK's `GenericSQLConnector` in place of a "
+                  f"class of its own. A "
                   f"green here certifies the definition, whichever type maps the repo "
                   f"ships, and the declared driver's dialect — not connector code, of "
                   f"which there is none. Checks whose input is absent skip rather "
@@ -525,13 +611,19 @@ jobs:
       # with an affirmative green rather than an error.
       ANALITIQ_CONNECTOR_DIR: ${{ github.workspace }}
 
-      # 'true' when the gate found a [project] table, 'false' for a thin connector.
-      # Read by BOTH the install step, which appends `.` to the pip resolution, and
-      # the verify step, which uses it to decide which class this run SHOULD have
-      # resolved. Keep it job-level: those two steps must answer from one verdict,
-      # and demoting it to a step-level env on the install step is exactly the
-      # refactor that would give the verify step back a second definition of "thin".
+      # 'true' when the gate found a [project] table, 'false' otherwise. Read by the
+      # install step, which appends `.` to the pip resolution when it is 'true'.
       INSTALL_SELF: ${{ needs.conformance-gate.outputs.install_self }}
+
+      # 'true' when the gate found a connector entry-point declaration, 'false' for a
+      # thin connector. Read by the verify step to decide which class this run SHOULD
+      # have resolved. A separate signal from INSTALL_SELF on purpose (.github#12):
+      # what gets installed and what should be under test are different questions,
+      # and answering the second with the first fails a dependencies-only package for
+      # correctly resolving the CDK's stand-in. Keep both job-level — the verify step
+      # must read the gate's verdict rather than re-derive one, which is what a probe
+      # for a file at some conventional path would be.
+      CLAIMS_CLASS: ${{ needs.conformance-gate.outputs.claims_class }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -684,19 +776,36 @@ jobs:
           print(f"connector_id: {target.connector_id!r} (kind={target.kind!r})")
           print(f"class under test: {origin}")
 
-          # Which class this run SHOULD have resolved follows from whether the install
-          # step installed one, and that is the gate's verdict — read it, don't
-          # re-derive it. Probing for a root connector.py here asks a different
-          # question, and gets it wrong in BOTH directions for any repo whose class is
-          # not at that exact path. A packaged src/-layout repo with a misnamed entry
-          # point resolves GenericSQLConnector, and such a probe calls it a thin
-          # connector and exits 0 — the very defect this step's header comment
-          # describes, waved through. The same repo with a CORRECT entry point is
-          # failed for resolving its own class. One definition of thin, for the same
-          # reason ANALITIQ_CONNECTOR_DIR is one definition of the target.
-          if os.environ["INSTALL_SELF"] == "false":
-              # Nothing of this repo's was installed, so the kit's own answer is the
-              # expected one — but WHICH answer that is depends on the kind.
+          # Which class this run SHOULD have resolved follows from whether the repo
+          # declares one, and that is the gate's verdict — read it, don't re-derive it.
+          # Probing for a root connector.py here asks a different question, and gets it
+          # wrong in BOTH directions for any repo whose class is not at that exact path.
+          # A packaged src/-layout repo with a misnamed entry point resolves
+          # GenericSQLConnector, and such a probe calls it a thin connector and exits 0
+          # — the very defect this step's header comment describes, waved through. The
+          # same repo with a CORRECT entry point is failed for resolving its own class.
+          # One definition of thin, for the same reason ANALITIQ_CONNECTOR_DIR is one
+          # definition of the target.
+          #
+          # The gate's OTHER packaging output, install_self, is not that definition
+          # either: a package can declare dependencies and no class (.github#14), and
+          # reading it here would fail such a repo for resolving exactly the stand-in
+          # it should. The install step validates install_self before this step runs;
+          # nothing validates claims_class, so do it here rather than let an unset
+          # value fall into the packaged branch and tell the author to fix an entry
+          # point their repo is not supposed to have.
+          claims_class = os.environ["CLAIMS_CLASS"]
+          if claims_class not in ("true", "false"):
+              sys.exit(
+                  f"CLAIMS_CLASS is {claims_class!r}, expected 'true' or 'false'. It "
+                  f"comes from the conformance-gate job's claims_class output; if that "
+                  f"job is green, look at how this job reads its outputs."
+              )
+
+          if claims_class == "false":
+              # This repo declares no class for the kit to find — whether or not a
+              # package of its own was installed — so the kit's own answer is the
+              # expected one. But WHICH answer that is depends on the kind.
               # _resolve_connector_class substitutes GenericSQLConnector for
               # `kind: database` and returns None for every other kind, so a database
               # connector resolving None means the substitution did not happen: the
@@ -735,13 +844,17 @@ jobs:
               # above, so this is the only remaining possibility.)
               if cls is not GenericSQLConnector:
                   sys.exit(
-                      f"the gate found no installable package, so the CDK's generic "
-                      f"class is expected here, but conformance resolved {origin}. "
-                      f"Something installed a connector class this job did not."
+                      f"the gate found no connector entry point declared in "
+                      f"pyproject.toml, so the CDK's generic class is expected here, "
+                      f"but conformance resolved {origin}. Something registered a "
+                      f"connector class this repo does not declare — if that class IS "
+                      f"this repo's, declare it under analitiq.source_connectors / "
+                      f"analitiq.destination_connectors so the gate stops calling this "
+                      f"a thin connector."
                   )
               print(
-                  f"no [project] table — thin connector, {origin} is the expected "
-                  f"stand-in"
+                  f"no connector entry point declared — thin connector, {origin} is "
+                  f"the expected stand-in"
               )
               sys.exit(0)
 
@@ -751,11 +864,12 @@ jobs:
           # quietly answering the wrong question, which is the right direction here.
           if cls is None or cls is GenericSQLConnector:
               sys.exit(
-                  f"this repo declares an installable package but conformance resolved "
-                  f"{origin}. No entry point named {target.connector_id!r} in "
-                  f"analitiq.source_connectors / analitiq.destination_connectors points "
-                  f"at its class, so the suite would audit CDK code and report green. Fix "
-                  f"the entry-point name in pyproject.toml — it must equal connector_id."
+                  f"this repo declares a connector entry point but conformance resolved "
+                  f"{origin}. The declared group is there; what is missing is an entry "
+                  f"point NAMED {target.connector_id!r} in analitiq.source_connectors / "
+                  f"analitiq.destination_connectors pointing at the class, so the suite "
+                  f"would audit CDK code and report green. Fix the entry-point name in "
+                  f"pyproject.toml — it must equal connector_id."
               )
           PY
 
