@@ -170,6 +170,13 @@ jobs:
       # Whether that job's pip resolution includes this repo — "is there a package
       # to install?". Only meaningful when `run` is 'true'.
       install_self: ${{ steps.gate.outputs.install_self }}
+      # Whether that resolution also reads this repo's requirements.txt — "is there
+      # a bare dependency list, the way a thin connector declares its driver's
+      # SQLAlchemy dialect?" (.github#14). Only meaningful when `run` is 'true', and
+      # never 'true' at the same time as install_self: a repo that declares a package
+      # feeds pip through pyproject.toml instead, which is the precedence the engine's
+      # own docker/entrypoint.sh applies when it attaches a connector directory.
+      install_requirements: ${{ steps.gate.outputs.install_requirements }}
       # Whether this repo ships a connector class of its own — "should the suite be
       # auditing repo code, or the CDK's stand-in for it?". Only meaningful when
       # `run` is 'true'. Distinct from install_self, which a package carrying nothing
@@ -195,12 +202,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Three questions, answered separately (.github#11, .github#12):
+          # Four questions, answered separately (.github#11, .github#12, .github#14):
           #
           #   run          — can the kit assess a connector of this KIND at all?
           #                  Answered by `kind` in definition/connector.json.
           #   install_self — is there a package to add to the CDK's pip resolution?
           #                  Answered by the `[project]` table in pyproject.toml.
+          #   install_requirements
+          #                — is there a bare dependency list to add to it instead?
+          #                  Answered by a requirements.txt with no pyproject.toml
+          #                  beside it.
           #   claims_class — does this repo ship a connector class of its own?
           #                  Answered by its entry-point declaration.
           #
@@ -447,12 +458,12 @@ jobs:
           # repo with a stray helper script is told to package it or move it, which is
           # a worse day for one author than a silent green is for nobody.
           #
-          # A constraint .github#14 inherits: it wants a thin `kind: database` repo to
-          # package its SQLAlchemy dialect, and such a repo declares no entry point, so
-          # it cannot carry ANY .py — not a conftest.py, not a noxfile.py. Loosening
-          # this to "…that aren't tests" is a separate decision from .github#12, and it
-          # is the one that decides whether a class parked under tests/ is assessed or
-          # waved through. Neither thin repo in the catalogue ships a .py today.
+          # A constraint .github#14 does NOT relax: a thin repo names its dialect
+          # package in requirements.txt, which is data, so it still cannot carry ANY
+          # .py — not a conftest.py, not a noxfile.py. Loosening this to "…that aren't
+          # tests" is a separate decision from .github#12, and it is the one that
+          # decides whether a class parked under tests/ is assessed or waved through.
+          # Neither thin repo in the catalogue ships a .py today.
           sources = sorted(
               path.relative_to(root).as_posix()
               for path in root.rglob("*.py")
@@ -498,6 +509,43 @@ jobs:
                   f"ones tier 1 does not assess — which is why you can be failing it "
                   f"on a repo whose conformance run is skipped."
               )
+
+          # Where a thin connector declares the SQLAlchemy dialect package its driver
+          # needs (.github#14). In a packaged repo requirements.txt reaches pip through
+          # pyproject.toml's `[tool.setuptools.dynamic]` and nothing here has to know
+          # the file exists; remove pyproject.toml and the same file is read by no one,
+          # which left `duckdb` unable to name the third-party duckdb_engine its
+          # `driver: duckdb` resolves through, and failing two read-path checks that no
+          # change to its own repo could fix.
+          #
+          # The precedence — package first, bare list only in its absence — is the
+          # ENGINE's, not one invented here. docker/entrypoint.sh attaches a mounted
+          # connector directory by running `pip install .` when a pyproject.toml is
+          # present and `pip install -r requirements.txt` only when it is not, so this
+          # gate keys on the same file and the same order. That is what makes a green
+          # here evidence about the environment production builds; keying it on
+          # `declares_package` instead would install a driver in CI for a repo whose
+          # entrypoint install fails, and certify an environment that never exists.
+          #
+          # Hence a hard failure, rather than quietly picking a branch, when the two
+          # signals disagree: a requirements.txt beside a pyproject.toml that declares
+          # no package is a file nothing reads, in CI or in production. Checked at
+          # every kind, like the ships-Python check above — the packaging contract does
+          # not depend on the kind — so this too can fail on a repo whose conformance
+          # run is skipped.
+          requirements = root / "requirements.txt"
+          if requirements.is_file() and pyproject.is_file() and not declares_package:
+              sys.exit(
+                  "requirements.txt sits beside a pyproject.toml that declares no "
+                  "[project] table, so nothing installs it. The engine's entrypoint "
+                  "keys on the FILE: it runs `pip install .` on a directory that has "
+                  "a pyproject.toml and fails here, and it reads a bare "
+                  "requirements.txt only when there is none. Either declare a "
+                  "[project] table (with dependencies, dynamic or literal), or delete "
+                  "pyproject.toml and let requirements.txt be this thin connector's "
+                  "dependency list."
+              )
+          install_requirements = requirements.is_file() and not pyproject.is_file()
 
           # A valid kind the kit has no behaviour checks for. Running anyway would go
           # RED, not green — 0.2.1's test_a_check_applies_to_this_connector_kind exists
@@ -550,20 +598,23 @@ jobs:
               emit("run", "false")
               sys.exit(0)
 
-          # Assessable kind. The two packaging signals answer different questions and
-          # are emitted separately. The package decides only WHAT gets installed: a
+          # Assessable kind. The packaging signals answer different questions and are
+          # emitted separately. The first two decide only WHAT gets installed: a
           # packaged connector adds `.` to the single pip resolution so its own class
-          # and driver requirements are importable; a thin one installs the CDK alone.
-          # The entry-point declaration decides WHICH class the run should then have
-          # resolved — the repo's own, or GenericSQLConnector standing in for it.
+          # and driver requirements are importable, a thin one adds its requirements.txt
+          # if it has one, and a definition-only repo adds nothing. The entry-point
+          # declaration decides WHICH class the run should then have resolved — the
+          # repo's own, or GenericSQLConnector standing in for it.
           #
-          # They coincide across the catalogue today, and come apart for a repo that
-          # packages dependencies without shipping a class: the shape .github#14 needs,
-          # where a thin `kind: database` connector declares the SQLAlchemy dialect its
-          # driver requires. Keying the verify step on `install_self` would fail that
-          # repo for correctly resolving the CDK's generic class.
+          # install_self and claims_class coincide across the catalogue today, and come
+          # apart for a repo that packages dependencies without shipping a class — a
+          # shape .github#14 leaves available (a `[project]` table with dependencies and
+          # no entry point) even though requirements.txt is the answer it settles on.
+          # Keying the verify step on `install_self` would fail such a repo for
+          # correctly resolving the CDK's generic class.
           emit("run", "true")
           emit("install_self", "true" if declares_package else "false")
+          emit("install_requirements", "true" if install_requirements else "false")
           emit("claims_class", "true" if claims_class else "false")
           if not claims_class:
               # ::notice:: rather than a bare print. A thin connector's green is a
@@ -583,8 +634,9 @@ jobs:
                   f"so the suite audits the CDK's `GenericSQLConnector` in place of a "
                   f"class of its own. A "
                   f"green here certifies the definition, whichever type maps the repo "
-                  f"ships, and the declared driver's dialect — not connector code, of "
-                  f"which there is none. Checks whose input is absent skip rather "
+                  f"ships, and the declared driver's dialect as resolved from this "
+                  f"repo's `requirements.txt` — not connector code, of which there is "
+                  f"none. Checks whose input is absent skip rather "
                   f"than fail (a missing *read* map is the exception: the kit fails "
                   f"that one outright), so read the `-rs` skip list in the suite step "
                   f"before treating a green as coverage."
@@ -650,6 +702,15 @@ jobs:
       # 'true' when the gate found a [project] table, 'false' otherwise. Read by the
       # install step, which appends `.` to the pip resolution when it is 'true'.
       INSTALL_SELF: ${{ needs.conformance-gate.outputs.install_self }}
+
+      # 'true' when the gate found a requirements.txt and no pyproject.toml — a thin
+      # connector's dependency list, which is where such a repo declares the SQLAlchemy
+      # dialect package its driver needs (.github#14). Read by the install step, which
+      # appends `-r requirements.txt` to the same resolution. Never 'true' alongside
+      # INSTALL_SELF: the gate mirrors the engine entrypoint's precedence, where a
+      # pyproject.toml is what pip reads and requirements.txt reaches it only through
+      # that file's dependencies.
+      INSTALL_REQUIREMENTS: ${{ needs.conformance-gate.outputs.install_requirements }}
 
       # 'true' when the gate found a connector entry-point declaration, 'false' for a
       # thin connector. Read by the verify step to decide which class this run SHOULD
@@ -718,29 +779,35 @@ jobs:
           # driver and fails, not skips, when the dialect package is absent from the
           # connector's requirements or sqlalchemy_registry_name is wrong.
           #
-          # `.` is appended only for a repo that declares a package, so a thin
-          # connector reaches that check with nothing but the CDK's own dependencies
-          # on the path. Its driver's dialect is then importable only if SQLAlchemy
-          # ships it: mariadb's built-in mariadb+pymysql resolves, duckdb's
-          # third-party duckdb_engine does not, and duckdb fails the read-path checks
-          # with no way to fix it while staying thin (.github#14). Installing `.`
-          # anyway is not the workaround — for both thin repos in the catalogue pip
-          # refuses either way, and says so: "Directory '.' is not installable" with no
-          # pyproject.toml, and "Multiple top-level packages discovered in a
-          # flat-layout: ['media', 'definition']" with a [project]-less one (verified
-          # on a duckdb checkout, pip 26.1.2 / setuptools 83). Don't read that second
-          # message as universal: it needs two non-excluded top-level directories.
-          # duckdb and mariadb both carry media/ and definition/, but pipedrive ships
-          # no media/, and setuptools would build its lone definition/ into a
-          # distribution named `definition` rather than refusing. Which is why the
-          # branch below keys on the gate's verdict and not on pip's willingness.
+          # `.` is appended only for a repo that declares a package; a thin connector
+          # contributes its requirements.txt instead, into the same resolution and for
+          # the same reason. That file is where such a repo names the SQLAlchemy
+          # dialect its driver needs (.github#14) — mariadb's mariadb+pymysql is built
+          # into SQLAlchemy and needs nothing, duckdb's duckdb_engine is third-party
+          # and, with no package to carry it, could not be declared anywhere until the
+          # gate started reading requirements.txt directly.
+          #
+          # Installing `.` for a thin repo was never the alternative: for both thin
+          # repos in the catalogue pip refuses, and says so — "Directory '.' is not
+          # installable" with no pyproject.toml, and "Multiple top-level packages
+          # discovered in a flat-layout: ['media', 'definition']" with a [project]-less
+          # one (verified on a duckdb checkout, pip 26.1.2 / setuptools 83). Don't read
+          # that second message as universal: it needs two non-excluded top-level
+          # directories. duckdb and mariadb both carry media/ and definition/, but
+          # pipedrive ships no media/, and setuptools would build its lone definition/
+          # into a distribution named `definition` rather than refusing. Which is why
+          # the branches below key on the gate's verdict and not on pip's willingness.
+          #
+          # Paths stay relative: a `run:` step's cwd is the checkout root, which is
+          # also what `.` already means here and what ANALITIQ_CONNECTOR_DIR points the
+          # kit at.
           TARGETS=("analitiq-cdk[conformance]==${CDK_VERSION}")
           case "${INSTALL_SELF}" in
             true)
               TARGETS+=(".")
               ;;
             false)
-              echo "Thin connector: installing the CDK alone, with no local package."
+              echo "Thin connector: no local package to install."
               ;;
             *)
               # Never fall through to the thin path on an unexpected value: for a
@@ -750,6 +817,25 @@ jobs:
               echo "INSTALL_SELF is '${INSTALL_SELF}', expected 'true' or 'false'." >&2
               echo "It comes from the conformance-gate job's install_self output; if" >&2
               echo "that job is green, look at how this job reads its outputs." >&2
+              exit 1
+              ;;
+          esac
+          case "${INSTALL_REQUIREMENTS}" in
+            true)
+              echo "Thin connector: installing its requirements.txt."
+              TARGETS+=("-r" "requirements.txt")
+              ;;
+            false)
+              ;;
+            *)
+              # Validated for the same reason INSTALL_SELF is, though the failure it
+              # prevents is a red rather than a green: a thin connector whose
+              # requirements silently went uninstalled fails the read-path checks with
+              # the kit's dialect message, which tells an author who did declare the
+              # dialect package to go and declare it.
+              echo "INSTALL_REQUIREMENTS is '${INSTALL_REQUIREMENTS}', expected 'true' or 'false'." >&2
+              echo "It comes from the conformance-gate job's install_requirements output;" >&2
+              echo "if that job is green, look at how this job reads its outputs." >&2
               exit 1
               ;;
           esac
