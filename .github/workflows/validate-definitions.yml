@@ -215,7 +215,13 @@ jobs:
               except (tomllib.TOMLDecodeError, UnicodeDecodeError) as err:
                   # Unparseable is a defect, not an absence. Falling through to the
                   # skip would turn a broken package declaration into a green PR.
-                  sys.exit(f"pyproject.toml is present but does not parse: {err}")
+                  hint = ""
+                  if pyproject.read_bytes().startswith(b"\xef\xbb\xbf"):
+                      hint = (
+                          " — the file starts with a UTF-8 BOM, which TOML does not "
+                          "allow; save it without one"
+                      )
+                  sys.exit(f"pyproject.toml is present but does not parse: {err}{hint}")
 
           if declares_package:
               emit("run", "true")
@@ -227,12 +233,18 @@ jobs:
           # that deletes or breaks pyproject.toml would silently convert an audited
           # connector into an unaudited one, reported as "definition-only repo".
           if (root / "connector.py").is_file():
+              detail = (
+                  "pyproject.toml declares no [project] table"
+                  if pyproject.is_file()
+                  else "there is no pyproject.toml"
+              )
               sys.exit(
-                  "connector.py is present but pyproject.toml declares no [project] "
-                  "table. A connector that ships Python must declare an installable "
-                  "package — the engine resolves its class through an entry point that "
-                  "only an installed package provides, and tier-1 conformance cannot "
-                  "import it otherwise."
+                  f"connector.py is present but {detail}. A connector that ships Python "
+                  f"must declare an installable package in pyproject.toml — the engine "
+                  f"resolves its class through an entry point that only an installed "
+                  f"package provides, and tier-1 conformance cannot import it otherwise. "
+                  f"(setup.py/setup.cfg packaging is pip-installable but not accepted "
+                  f"here: the registry standardises on pyproject.toml.)"
               )
 
           # Definition-only repo: nothing to import, and `pip install .` would fail with
@@ -301,6 +313,12 @@ jobs:
       # on the RESOLVED value, since the variable that actually decides is set in
       # org/repo settings where this comment is not visible.
       CDK_VERSION: ${{ vars.CDK_VERSION || '0.2.0rc2' }}
+
+      # One definition of the target, inherited by every step and by the kit itself.
+      # The verify step and the suite MUST agree on this; when they disagreed, the
+      # verify step certified a resolution the suite never performed, and it did so
+      # with an affirmative green rather than an error.
+      ANALITIQ_CONNECTOR_DIR: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -315,6 +333,16 @@ jobs:
         with:
           python-version: '3.12'   # the kit's floor is 3.11
 
+      # The suite and the verify step must run outside the checkout, and in the SAME
+      # place. Defined once here rather than as a literal in each step: this is the one
+      # invariant in this job whose regression mode is a green check rather than a red
+      # one, so it should not depend on two strings staying equal.
+      - name: Prepare an isolated run directory
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/conformance-run"
+          echo "RUN_DIR=$RUNNER_TEMP/conformance-run" >> "$GITHUB_ENV"
+
       - name: Install pinned CDK + this connector
         run: |
           set -euo pipefail
@@ -326,7 +354,7 @@ jobs:
           # so assert it here: a stale override must not silently restore a kit that
           # exits 0 on a connector kind it cannot assess. Malformed values raise
           # InvalidVersion, which also fails the step.
-          python3 - <<'PY'
+          python3 -P - <<'PY'
           import os, sys
           from packaging.version import Version
           floor = Version("0.2.0rc2")
@@ -356,7 +384,7 @@ jobs:
 
           # ...and prove the pin survived, so the echoed version is a record rather
           # than a claim.
-          python3 - <<'PY'
+          python3 -P - <<'PY'
           import os, sys
           from importlib.metadata import version
           from packaging.version import Version
@@ -386,16 +414,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The same directory the suite runs from, for the reason in the comment above.
-          RUN_DIR="$RUNNER_TEMP/conformance-run"
-          mkdir -p "$RUN_DIR"
           cd "$RUN_DIR"
           python3 - <<'PY'
           import os, pathlib, sys
           from cdk.conformance.target import ConformanceSetupError, load_target
           from cdk.sql.generic import GenericSQLConnector
 
-          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          root = pathlib.Path(os.environ["ANALITIQ_CONNECTOR_DIR"])
           try:
               target = load_target(root)
           except ConformanceSetupError as err:
@@ -418,7 +443,9 @@ jobs:
               sys.exit(0)
 
           # Identity, not a module-name prefix: this asks exactly "did the kit
-          # substitute its fallback", and stays correct if the generic class moves.
+          # substitute its fallback". If the generic class is ever moved or renamed the
+          # import above raises and this step goes red — loudly wrong rather than
+          # quietly answering the wrong question, which is the right direction here.
           if cls is None or cls is GenericSQLConnector:
               sys.exit(
                   f"this repo ships connector.py but conformance resolved {origin}. No "
@@ -457,11 +484,8 @@ jobs:
           #
           # -rs prints skip reasons, so "passed" stays distinguishable from "not
           # assessed" in the log rather than being inferred from a bare count.
-          RUN_DIR="$RUNNER_TEMP/conformance-run"
-          mkdir -p "$RUN_DIR"
           cd "$RUN_DIR"
-          ANALITIQ_CONNECTOR_DIR="$GITHUB_WORKSPACE" \
-            pytest -p cdk.conformance.plugin \
-              --pyargs cdk.conformance.tier1 \
-              -o addopts= -o pythonpath= \
-              -rs
+          pytest -p cdk.conformance.plugin \
+            --pyargs cdk.conformance.tier1 \
+            -o addopts= -o pythonpath= \
+            -rs
