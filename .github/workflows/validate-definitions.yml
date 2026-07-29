@@ -102,26 +102,157 @@ jobs:
             exit 1
           fi
 
-          # Run the rule pass only when there is a real definition to check. An
-          # unconfigured template scaffold (no endpoints AND no read map) has
-          # nothing to cover, so skip it. A real api connector has endpoints; a
-          # real database connector has type-map-read.json; either triggers the
-          # full pass.
+          # Endpoint discovery, through a temp file rather than
+          # `mapfile < <(find …)`. A process substitution's exit status is discarded,
+          # so a find that fails — an unreadable definition/endpoints — yields an
+          # empty array indistinguishable from a repo that simply has no endpoints,
+          # and lands on the scaffold branch below. Redirected into a file, a failing
+          # find fails the step under `set -e`.
+          ENDPOINT_LIST="$(mktemp)"
           ENDPOINTS=()
           if [ -d definition/endpoints ]; then
-            mapfile -d '' -t ENDPOINTS < <(find definition/endpoints -name "*.json" -type f -print0)
+            find definition/endpoints -name "*.json" -type f -print0 > "$ENDPOINT_LIST"
+            mapfile -d '' -t ENDPOINTS < "$ENDPOINT_LIST"
           fi
+          rm -f "$ENDPOINT_LIST"
 
+          # An unconfigured template scaffold — no endpoints AND no read map — cannot
+          # satisfy the cross-document coverage rule, because there is no sibling for
+          # that rule to read. That is the ONLY thing this condition excuses; see the
+          # filter below.
+          SCAFFOLD=false
           if [ "${#ENDPOINTS[@]}" -eq 0 ] && [ ! -f definition/type-map-read.json ]; then
-            echo "No endpoints and no type-map-read.json — unconfigured template scaffold; skipping rule pass."
-            exit 0
+            SCAFFOLD=true
           fi
 
-          # Coverage is anchored on the connector: it discovers the sibling
-          # type-map-read.json and endpoints/ from definition/ and fails if an
+          # The connector document is validated UNCONDITIONALLY, above the scaffold
+          # branch. Its contract-model rules — required fields, driver patterns — hold
+          # whatever else the repo has or has not configured, and while this sat below
+          # the branch, a scaffold-shaped repo had nothing read its definition at all:
+          # this job short-circuited before analitiq-validate saw the file, and
+          # `conformance-gate` only ever reads `kind`. Three repos were live in that
+          # state — clickhouse, duckdb and mariadb — each reporting a green on the one
+          # required check over a real 2 KB definition, clickhouse's missing
+          # `connector_id` outright.
+          #
+          # Coverage is anchored on the connector: this same call discovers the
+          # sibling type-map-read.json and endpoints/ from definition/ and fails if an
           # endpoint native is unresolved by the read map.
           echo "--- definition/connector.json ---"
-          analitiq-validate --document definition/connector.json --semantic-only
+          set +e
+          REPORT="$(analitiq-validate --document definition/connector.json --semantic-only)"
+          REPORT_RC=$?
+          set -e
+          printf '%s\n' "$REPORT"
+
+          # Decide what being a scaffold is allowed to excuse. -P for the same reason
+          # the conformance gate uses it: this step's cwd is the PR's own checkout, and
+          # a root-level json.py would otherwise decide the verdict.
+          REPORT="$REPORT" REPORT_RC="$REPORT_RC" SCAFFOLD="$SCAFFOLD" python3 -P - <<'PY'
+          import json, os, pathlib, sys
+
+          report = os.environ["REPORT"]
+          rc = int(os.environ["REPORT_RC"])
+          scaffold = os.environ["SCAFFOLD"] == "true"
+
+          if rc == 0:
+              sys.exit(0)
+
+          # Unparseable output does not get the benefit of the doubt: a non-zero exit
+          # this step cannot read is a failure, not a finding to weigh.
+          try:
+              findings = json.loads(report)["findings"]
+          except (json.JSONDecodeError, KeyError, TypeError) as err:
+              sys.exit(
+                  f"analitiq-validate exited {rc} and its output is not a report this "
+                  f"step can read ({err}). Refusing to treat that as a pass."
+              )
+
+          # A scaffold is excused exactly one class of finding — type-map-coverage —
+          # and only while it ships no definition/type-map*.json AT ALL. The template
+          # is in precisely that state and its only finding is that one, so it stays
+          # green and a generated repo does not fail its first PR. A repo that DOES
+          # ship a map, under the pre-split `type-map.json` name, is not excused: that
+          # is a rename its author can act on (duckdb and mariadb, both live today),
+          # not an absence. And no other validator is excused at any time, which is
+          # what keeps clickhouse's missing connector_id red.
+          errors = [f for f in findings if f.get("severity") == "error"]
+          ships_a_map = any(pathlib.Path("definition").glob("type-map*.json"))
+          excusable = scaffold and not ships_a_map
+          excused = {
+              i for i, f in enumerate(errors)
+              if excusable and f.get("validator") == "type-map-coverage"
+          }
+          remaining = [f for i, f in enumerate(errors) if i not in excused]
+
+          def annotate(level, prefix, seq):
+              """One annotation per DISTINCT finding.
+
+              Deduplicated because the validator repeats a finding per offending
+              node — sevdesk emits the same increment_by error 25 times — and 25
+              identical annotations bury the rest. The counts in the exit messages
+              below are the true ones, not these.
+
+              Escaped because `path` and `message` quote the PR's own definition:
+              a newline in either would otherwise end this workflow command and let
+              the rest of the string be parsed as a new one.
+              """
+              seen = set()
+              for f in seq:
+                  line = (
+                      f"{f.get('validator')} @ {f.get('path')}: "
+                      f"{f.get('message', '')}"
+                  )
+                  if line in seen:
+                      continue
+                  seen.add(line)
+                  safe = (
+                      line.replace("%", "%25")
+                      .replace("\r", "%0D")
+                      .replace("\n", "%0A")
+                  )
+                  print(f"::{level}::{prefix}{safe}")
+
+          annotate(
+              "notice",
+              "Unconfigured scaffold, tolerating — ",
+              [errors[i] for i in sorted(excused)],
+          )
+          annotate("error", "", remaining)
+
+          if remaining:
+              sys.exit(
+                  f"definition/connector.json has {len(remaining)} error finding(s)"
+                  + (" that being an unconfigured scaffold does not excuse." if scaffold
+                     else ".")
+              )
+          # Every error was excused, but the exit code was still non-zero — so it must
+          # have been explained by the findings we just accounted for. If it was not,
+          # say so rather than converting an unexplained failure into a pass.
+          if not excused:
+              sys.exit(
+                  f"analitiq-validate exited {rc} but reported no error findings this "
+                  f"step could account for. Refusing to treat that as a pass."
+              )
+          PY
+
+          # Scaffold: the endpoint and type-map passes have nothing to run against.
+          # Annotated and summarised rather than a bare `echo`, because this is the one
+          # REQUIRED check in the workflow — an invisible skip here is worth more than
+          # a visible one anywhere else, and until now this path printed a single log
+          # line claiming "unconfigured template scaffold" over definitions that were
+          # nothing of the kind.
+          if [ "$SCAFFOLD" = true ]; then
+            echo "::warning::Definition rule pass PARTIAL: no endpoints and no definition/type-map-read.json, so only definition/connector.json was validated."
+            {
+              echo "### Definition validation: PARTIAL"
+              echo
+              echo "No \`definition/endpoints/*.json\` and no \`definition/type-map-read.json\`, so the endpoint and type-map rule passes had nothing to run against."
+              echo
+              echo "\`definition/connector.json\` **was** validated. A green here certifies that document and nothing else."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           # Type-map rule checks (read always; write for database connectors).
           for m in definition/type-map-read.json definition/type-map-write.json; do
