@@ -172,10 +172,11 @@ jobs:
       install_self: ${{ steps.gate.outputs.install_self }}
       # Whether this repo ships a connector class of its own — "should the suite be
       # auditing repo code, or the CDK's stand-in for it?". Only meaningful when
-      # `run` is 'true'. Distinct from install_self: a package can carry nothing but
-      # dependencies (.github#14), and a repo that declares a class necessarily
-      # declares a package, so the pair is (false,false), (true,false) or (true,true)
-      # — never (false,true).
+      # `run` is 'true'. Distinct from install_self, which a package carrying nothing
+      # but dependencies sets on its own (.github#14). One-directional: claims_class
+      # implies install_self, because entry points cannot be declared without a
+      # `[project]` table to hold them, so install_self is never 'false' while
+      # claims_class is 'true'. The converse happens and is the point of the split.
       claims_class: ${{ steps.gate.outputs.claims_class }}
     steps:
       - uses: actions/checkout@v4
@@ -344,10 +345,12 @@ jobs:
               )
 
           # One file, read once, answering the two packaging questions above. They were
-          # a single signal until .github#12, and the answer to the second one was the
-          # presence of a file literally named connector.py at the repo root — a filing
-          # convention rather than anything production resolves on, wrong in the silent
-          # direction for any repo that keeps its class somewhere else.
+          # a single signal until .github#12: "does this repo ship a class" was
+          # answered by the `[project]` table, which is the answer to the other
+          # question — what pip should install. Before .github#13 it was answered by a
+          # file literally named connector.py at the repo root, a filing convention
+          # rather than anything production resolves on. Both readings were wrong in
+          # the silent direction for a repo that keeps its class somewhere else.
           pyproject = root / "pyproject.toml"
           declares_package = False
           claims_class = False
@@ -365,11 +368,26 @@ jobs:
                       )
                   sys.exit(f"pyproject.toml is present but does not parse: {err}{hint}")
 
-              project = data.get("project")
+              # Each of the three keys below decides a verdict, so a wrong TOML type in
+              # any of them is a defect this gate must report rather than read past —
+              # the rule the connector.json branch above already applies: present but
+              # unreadable is not absence. Reading past them would answer "declares no
+              # entry point" for what is really a malformed declaration, and the
+              # ships-Python branch would then send the author to add a table that is
+              # not what is broken. `project = "x"` cannot be fixed by declaring an
+              # entry point under it; the new header would collide with the scalar.
+              def require(value, shown, kind, label):
+                  if value is not None and not isinstance(value, kind):
+                      sys.exit(
+                          f"pyproject.toml: {shown} must be {label}, got "
+                          f"{type(value).__name__}. The conformance gate reads it to "
+                          f"decide whether this repo ships a connector class."
+                      )
+                  return value
+
+              project = require(data.get("project"), "[project]", dict, "a table")
               declares_package = project is not None
-              # Guarded, because `project = "x"` parses as TOML and would otherwise
-              # raise here rather than at the pip install that should reject it.
-              if isinstance(project, dict):
+              if project is not None:
                   # GROUP presence, not "a name in that group equals connector_id".
                   # A repo whose entry point is misnamed still claims a class, and
                   # finding that the kit could not resolve it is the verify step's
@@ -377,20 +395,25 @@ jobs:
                   # precisely the typo that step exists to catch, route it to the thin
                   # branch, and pass it green — the silent direction .github#12 is
                   # about, reintroduced one layer up.
-                  entry_points = project.get("entry-points")
-                  groups = entry_points.keys() if isinstance(entry_points, dict) else ()
+                  groups = require(
+                      project.get("entry-points"),
+                      "[project.entry-points]",
+                      dict,
+                      "a table",
+                  ) or {}
                   # `dynamic = ["entry-points"]` is PEP 621 for "the build backend
                   # supplies these" (setuptools reads them from a file), so there is no
                   # table to look in and a literal read says no class. Counted as a
                   # claim: the alternative is a thin verdict for a repo that then
                   # resolves its own class, which the verify step reports as "something
-                  # installed a class this job did not" — red either way, but aimed at
-                  # the wrong thing.
-                  dynamic = project.get("dynamic")
-                  dynamic_fields = dynamic if isinstance(dynamic, list) else ()
+                  # registered a class this repo does not declare" — red either way,
+                  # but aimed at the wrong thing.
+                  dynamic = require(
+                      project.get("dynamic"), "project.dynamic", list, "an array"
+                  ) or []
                   claims_class = (
                       any(group in CONNECTOR_ENTRY_POINT_GROUPS for group in groups)
-                      or "entry-points" in dynamic_fields
+                      or "entry-points" in dynamic
                   )
 
           # Shipping connector code while declaring no way to reach it is a broken
@@ -620,9 +643,9 @@ jobs:
       # have resolved. A separate signal from INSTALL_SELF on purpose (.github#12):
       # what gets installed and what should be under test are different questions,
       # and answering the second with the first fails a dependencies-only package for
-      # correctly resolving the CDK's stand-in. Keep both job-level — the verify step
-      # must read the gate's verdict rather than re-derive one, which is what a probe
-      # for a file at some conventional path would be.
+      # correctly resolving the CDK's stand-in. Keep it job-level alongside the other
+      # two — the verify step must read the gate's verdict rather than re-derive one,
+      # which is what a probe for a file at some conventional path would be.
       CLAIMS_CLASS: ${{ needs.conformance-gate.outputs.claims_class }}
     steps:
       - uses: actions/checkout@v4
@@ -864,12 +887,14 @@ jobs:
           # quietly answering the wrong question, which is the right direction here.
           if cls is None or cls is GenericSQLConnector:
               sys.exit(
-                  f"this repo declares a connector entry point but conformance resolved "
-                  f"{origin}. The declared group is there; what is missing is an entry "
-                  f"point NAMED {target.connector_id!r} in analitiq.source_connectors / "
-                  f"analitiq.destination_connectors pointing at the class, so the suite "
-                  f"would audit CDK code and report green. Fix the entry-point name in "
-                  f"pyproject.toml — it must equal connector_id."
+                  f"this repo declares connector entry points but conformance resolved "
+                  f"{origin}. What is missing is one NAMED {target.connector_id!r} in "
+                  f"analitiq.source_connectors / analitiq.destination_connectors, "
+                  f"pointing at the class — so the suite would audit CDK code and "
+                  f"report green. The name must equal connector_id. Fix it in "
+                  f"pyproject.toml, or, if this repo declares "
+                  f"`dynamic = [\"entry-points\"]`, in whichever file its build backend "
+                  f"supplies them from."
               )
           PY
 
