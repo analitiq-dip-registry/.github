@@ -109,17 +109,22 @@ jobs:
           # and lands on the scaffold branch below. Redirected into a file, a failing
           # find fails the step under `set -e`.
           ENDPOINT_LIST="$(mktemp)"
+          trap 'rm -f "$ENDPOINT_LIST"' EXIT
           ENDPOINTS=()
           if [ -d definition/endpoints ]; then
-            find definition/endpoints -name "*.json" -type f -print0 > "$ENDPOINT_LIST"
+            # Trailing slash so a SYMLINKED definition/endpoints is descended. Without
+            # it find refuses the starting point and reports nothing, and a fully
+            # configured connector reads as having no endpoints — verified, ten
+            # endpoint files behind a symlink came back as an empty array. Not `-L`:
+            # that would also follow symlinked entries INSIDE the directory, which
+            # would let a PR point an endpoint at any file the runner can read and
+            # have the validator quote it into a public log.
+            find definition/endpoints/ -name "*.json" -type f -print0 > "$ENDPOINT_LIST"
             mapfile -d '' -t ENDPOINTS < "$ENDPOINT_LIST"
           fi
-          rm -f "$ENDPOINT_LIST"
 
-          # An unconfigured template scaffold — no endpoints AND no read map — cannot
-          # satisfy the cross-document coverage rule, because there is no sibling for
-          # that rule to read. That is the ONLY thing this condition excuses; see the
-          # filter below.
+          # Whether the endpoint pass and the read-map pass have any input. Reported
+          # below; it does NOT decide what the connector document is held to.
           SCAFFOLD=false
           if [ "${#ENDPOINTS[@]}" -eq 0 ] && [ ! -f definition/type-map-read.json ]; then
             SCAFFOLD=true
@@ -145,15 +150,21 @@ jobs:
           set -e
           printf '%s\n' "$REPORT"
 
-          # Decide what being a scaffold is allowed to excuse. -P for the same reason
-          # the conformance gate uses it: this step's cwd is the PR's own checkout, and
-          # a root-level json.py would otherwise decide the verdict.
-          REPORT="$REPORT" REPORT_RC="$REPORT_RC" SCAFFOLD="$SCAFFOLD" python3 -P - <<'PY'
+          # Decide what the template, and only the template, is allowed to be excused.
+          # -P for the same reason the conformance gate uses it: this step's cwd is the
+          # PR's own checkout, and a root-level json.py would otherwise decide the
+          # verdict.
+          REPORT="$REPORT" REPORT_RC="$REPORT_RC" python3 -P - <<'PY'
           import json, os, pathlib, sys
 
           report = os.environ["REPORT"]
           rc = int(os.environ["REPORT_RC"])
-          scaffold = os.environ["SCAFFOLD"] == "true"
+
+          def summary(text):
+              path = os.environ.get("GITHUB_STEP_SUMMARY")
+              if path:
+                  with open(path, "a", encoding="utf-8") as fh:
+                      fh.write(text + "\n")
 
           if rc == 0:
               sys.exit(0)
@@ -162,26 +173,64 @@ jobs:
           # this step cannot read is a failure, not a finding to weigh.
           try:
               findings = json.loads(report)["findings"]
+              if not isinstance(findings, list) or not all(
+                  isinstance(f, dict) for f in findings
+              ):
+                  raise TypeError("findings is not a list of objects")
           except (json.JSONDecodeError, KeyError, TypeError) as err:
               sys.exit(
                   f"analitiq-validate exited {rc} and its output is not a report this "
                   f"step can read ({err}). Refusing to treat that as a pass."
               )
 
-          # A scaffold is excused exactly one class of finding — type-map-coverage —
-          # and only while it ships no definition/type-map*.json AT ALL. The template
-          # is in precisely that state and its only finding is that one, so it stays
-          # green and a generated repo does not fail its first PR. A repo that DOES
-          # ship a map, under the pre-split `type-map.json` name, is not excused: that
-          # is a rename its author can act on (duckdb and mariadb, both live today),
-          # not an absence. And no other validator is excused at any time, which is
-          # what keeps clickhouse's missing connector_id red.
-          errors = [f for f in findings if f.get("severity") == "error"]
-          ships_a_map = any(pathlib.Path("definition").glob("type-map*.json"))
-          excusable = scaffold and not ships_a_map
+          # Severity decides everything below, so an unrecognised one must not simply
+          # fall out of `errors` and disappear. VALIDATOR_VERSION is set in org/repo
+          # settings, not in this file, so the validator moves without this filter
+          # being reread — and without this check, a severity it has never seen would
+          # vanish silently on any run that excuses anything at all.
+          KNOWN_SEVERITIES = {"error", "warning"}
+          unclassified = sorted(
+              {
+                  str(f.get("severity"))
+                  for f in findings
+                  if f.get("severity") not in KNOWN_SEVERITIES
+              }
+          )
+          if unclassified:
+              sys.exit(
+                  f"analitiq-validate reported finding severities this step does not "
+                  f"recognise ({', '.join(unclassified)}). Refusing to classify a "
+                  f"report it cannot read."
+              )
+
+          errors = [f for f in findings if f["severity"] == "error"]
+
+          # WHO may be excused. The template ships connector_id "replace-me" and every
+          # authored repo replaces it, so this identifies the scaffold itself. Keying
+          # on its silhouette instead — no endpoints and no type map, as this filter
+          # first did — also matched authored connectors: clickhouse is exactly that
+          # shape with a real 2 KB definition, and would have gone green over a missing
+          # read map the moment its connector_id defect was fixed. `version == "0.0.0"`
+          # fails as a discriminator for the same reason; clickhouse sits there too.
+          #
+          # WHAT is excused. Exactly one validator, type-map-coverage, whose only
+          # reachable error in this state is "connector requires sibling
+          # type-map-read.json; missing" — true of the template by construction, and
+          # the one finding a generated repo cannot avoid on its first PR. Nothing
+          # else, for anyone: that is what keeps clickhouse's missing connector_id and
+          # duckdb's malformed driver red.
+          try:
+              connector_id = json.loads(
+                  pathlib.Path("definition/connector.json").read_text(encoding="utf-8")
+              ).get("connector_id")
+          except (OSError, json.JSONDecodeError, AttributeError):
+              # Unreadable here means the validator has already failed on it, and its
+              # findings stand unexcused.
+              connector_id = None
+          untouched_scaffold = connector_id == "replace-me"
           excused = {
               i for i, f in enumerate(errors)
-              if excusable and f.get("validator") == "type-map-coverage"
+              if untouched_scaffold and f.get("validator") == "type-map-coverage"
           }
           remaining = [f for i, f in enumerate(errors) if i not in excused]
 
@@ -213,18 +262,34 @@ jobs:
                   )
                   print(f"::{level}::{prefix}{safe}")
 
+          # ::warning::, not ::notice::, and written to the step summary as well. A
+          # tolerated error on the connector document is the most consequential thing
+          # this step can report while still exiting 0, and an annotation alone is
+          # ephemeral — the summary is the durable record. Without this, a green here
+          # would claim the document is clean when a finding on it was suppressed.
           annotate(
-              "notice",
-              "Unconfigured scaffold, tolerating — ",
+              "warning",
+              "Untouched template scaffold, tolerating — ",
               [errors[i] for i in sorted(excused)],
           )
           annotate("error", "", remaining)
 
+          if excused:
+              summary(
+                  f"### Definition validation: {len(excused)} finding(s) tolerated\n\n"
+                  f"`definition/connector.json` still carries the template's "
+                  f"placeholder `connector_id`, so this repo is an untouched scaffold "
+                  f"and its `type-map-coverage` error(s) were tolerated on that basis "
+                  f"— see this step's annotations. A green here does NOT mean the "
+                  f"connector document is clean; it means the only thing wrong with it "
+                  f"is that nobody has filled it in yet."
+              )
+
           if remaining:
               sys.exit(
                   f"definition/connector.json has {len(remaining)} error finding(s)"
-                  + (" that being an unconfigured scaffold does not excuse." if scaffold
-                     else ".")
+                  + (" that being an untouched template scaffold does not excuse."
+                     if untouched_scaffold else ".")
               )
           # Every error was excused, but the exit code was still non-zero — so it must
           # have been explained by the findings we just accounted for. If it was not,
@@ -236,22 +301,28 @@ jobs:
               )
           PY
 
-          # Scaffold: the endpoint and type-map passes have nothing to run against.
-          # Annotated and summarised rather than a bare `echo`, because this is the one
-          # REQUIRED check in the workflow — an invisible skip here is worth more than
-          # a visible one anywhere else, and until now this path printed a single log
-          # line claiming "unconfigured template scaffold" over definitions that were
-          # nothing of the kind.
+          # Report that two of the three passes had no input. Annotated and summarised
+          # rather than a bare `echo`, because this is the one REQUIRED check in the
+          # workflow — an invisible skip here is worth more than a visible one anywhere
+          # else, and until now this path printed a single log line calling the repo an
+          # "unconfigured template scaffold" over definitions that were nothing of the
+          # kind.
+          #
+          # Deliberately NOT an early exit any more. The loops below are already
+          # guarded — an empty ENDPOINTS array iterates zero times, and each type map
+          # is tested for existence — so exiting here bought nothing and skipped one
+          # real case: a write map with no read map (kinds file, s3, stdout) reached
+          # `exit 0` with the log claiming the type-map pass had nothing to run
+          # against, while definition/type-map-write.json sat there unvalidated.
           if [ "$SCAFFOLD" = true ]; then
-            echo "::warning::Definition rule pass PARTIAL: no endpoints and no definition/type-map-read.json, so only definition/connector.json was validated."
+            echo "::warning::Definition rule pass PARTIAL: no definition/endpoints/*.json and no definition/type-map-read.json, so the endpoint pass and the read-map pass had no input."
             {
               echo "### Definition validation: PARTIAL"
               echo
-              echo "No \`definition/endpoints/*.json\` and no \`definition/type-map-read.json\`, so the endpoint and type-map rule passes had nothing to run against."
+              echo "No \`definition/endpoints/*.json\` and no \`definition/type-map-read.json\`, so the endpoint pass and the read-map pass had no input."
               echo
-              echo "\`definition/connector.json\` **was** validated. A green here certifies that document and nothing else."
+              echo "\`definition/connector.json\` **was** validated, as is any other definition document present."
             } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
           fi
 
           # Type-map rule checks (read always; write for database connectors).
@@ -356,11 +427,12 @@ jobs:
           # outside this set is a malformed definition rather than a kind the kit has
           # yet to cover, and gets the hard failure below rather than the skip. Without
           # that split, `kind: Database` or `kind: databse` reads as "no checks for
-          # this kind" and skips — and for a repo in the scaffold shape (no endpoints,
-          # no read map) whose kind lands on that skip, this gate is the ONLY thing
-          # that reads kind at all: `validate` short-circuits before analitiq-validate
-          # sees the file, and no conformance job runs to have the kit read it either.
-          # A one-character PR would silently revert this whole gate. Duplicating a
+          # this kind" and skips, and no conformance job then runs to have the kit read
+          # the file either — so a one-character PR would silently revert this whole
+          # gate. `validate` does now hand every connector.json to analitiq-validate
+          # unconditionally, so it is a second reader rather than none at all; keep
+          # this check anyway, because it is what makes an unknown kind fail HERE
+          # rather than turn into a skip that satisfies a required check. Duplicating a
           # closed enum risks going stale, but stale here means a red on a valid new
           # kind: visible and immediately fixable, unlike a silent skip.
           KNOWN_KINDS = {"api", "database", "nosql", "document", "file", "s3", "stdout"}
@@ -408,12 +480,13 @@ jobs:
               emit("run", "false")
               sys.exit(0)
 
-          # Present-but-unreadable gets no such deference, because `validate` does not
-          # reliably cover it: its rule pass sits behind a scaffold skip (no endpoints
-          # and no type-map-read.json), and a repo in that shape never hands the file
-          # to analitiq-validate at all. Deferring here would leave nothing red
-          # anywhere. Same reasoning as the pyproject.toml branch below: unparseable is
-          # a defect, not an absence.
+          # Present-but-unreadable gets no such deference. `validate` does now hand the
+          # file to analitiq-validate on every path — it did not when this comment was
+          # first written, and the fix for that is in this same PR — but deference is
+          # still wrong here: this gate has to parse the file to answer its own
+          # question, and a gate that cannot read its input must say so rather than
+          # forward a verdict it did not reach. Same reasoning as the pyproject.toml
+          # branch below: unparseable is a defect, not an absence.
           try:
               definition = json.loads(definition_path.read_text(encoding="utf-8"))
           except (json.JSONDecodeError, UnicodeDecodeError) as err:
@@ -830,11 +903,24 @@ jobs:
               # reached through a behaviour change in the kit rather than a moved
               # class — which the module-level import cannot catch, so this must.
               #
-              # Tolerating None for OTHER kinds is what keeps this correct when
-              # analitiq-engine#415 grows ASSESSABLE_KINDS: a thin api connector
-              # resolving None is then the CDK's documented outcome, not a defect.
-              # Today `database` is the only kind that reaches this branch at all.
-              if target.kind == "database" and cls is None:
+              # `database` is the only kind that reaches this job at all today, and
+              # rather than pre-authorising a verdict for kinds nobody has evaluated,
+              # this refuses them. Tolerating None for other kinds would be accurate
+              # about the CDK — that IS its documented outcome — but it would emit the
+              # identical "thin connector, none is the expected stand-in" green that
+              # the guard below exists to prevent, for a kind no one has looked at, and
+              # nothing at ASSESSABLE_KINDS points here. Failing makes revisiting this
+              # branch a required step of growing that set rather than an inherited
+              # default.
+              if target.kind != "database":
+                  sys.exit(
+                      f"this job ran for kind {target.kind!r}, which this step has no "
+                      f"expectation for. ASSESSABLE_KINDS in the conformance-gate job "
+                      f"has grown without this branch being revisited: decide what a "
+                      f"thin {target.kind} connector should resolve to, and assert it "
+                      f"here."
+                  )
+              if cls is None:
                   sys.exit(
                       f"the CDK substitutes GenericSQLConnector for kind: database "
                       f"when no entry point matches connector_id, but conformance "
