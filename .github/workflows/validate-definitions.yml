@@ -85,245 +85,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Validation needs no network and no schema host — it is model-driven
-          # and fully offline. (--semantic-only on the calls below is a no-op for the
-          # current validator, which is always offline; it is kept for compatibility
-          # with validator releases that still parse it.)
+          # Validation needs no network and no schema host — it is model-driven and
+          # fully offline. (--semantic-only is a no-op for the current validator; kept
+          # for releases that still parse it.)
           #
-          # connector.json is mandatory in every repo, scaffold included, so this
-          # check sits outside the skip below.
-          #
-          # Keep it unconditional: the `conformance` job below deliberately does
-          # NOT re-report a missing connector.json, so this is the only check that
-          # catches it. Guarding it behind an `if:` or a path filter would make that
-          # file's absence pass both jobs.
+          # Every document, every repo, no exceptions. There is no "unconfigured
+          # scaffold" branch: a repo whose definition is incomplete IS incomplete, and
+          # saying so is this check's entire job.
           if [ ! -f definition/connector.json ]; then
             echo "ERROR: definition/connector.json is missing."
             exit 1
           fi
 
-          # Endpoint discovery, through a temp file rather than
-          # `mapfile < <(find …)`. A process substitution's exit status is discarded,
-          # so a find that fails — an unreadable definition/endpoints — yields an
-          # empty array indistinguishable from a repo that simply has no endpoints,
-          # and lands on the scaffold branch below. Redirected into a file, a failing
-          # find fails the step under `set -e`.
-          ENDPOINT_LIST="$(mktemp)"
-          trap 'rm -f "$ENDPOINT_LIST"' EXIT
-          ENDPOINTS=()
-          if [ -d definition/endpoints ]; then
-            # Trailing slash so a SYMLINKED definition/endpoints is descended. Without
-            # it find refuses the starting point and reports nothing, and a fully
-            # configured connector reads as having no endpoints — verified, ten
-            # endpoint files behind a symlink came back as an empty array. Not `-L`:
-            # that would also follow symlinked entries INSIDE the directory, which
-            # would let a PR point an endpoint at any file the runner can read and
-            # have the validator quote it into a public log.
-            find definition/endpoints/ -name "*.json" -type f -print0 > "$ENDPOINT_LIST"
-            mapfile -d '' -t ENDPOINTS < "$ENDPOINT_LIST"
-          fi
-
-          # Whether the endpoint pass and the read-map pass have any input. Reported
-          # below; it does NOT decide what the connector document is held to.
-          SCAFFOLD=false
-          if [ "${#ENDPOINTS[@]}" -eq 0 ] && [ ! -f definition/type-map-read.json ]; then
-            SCAFFOLD=true
-          fi
-
-          # The connector document is validated UNCONDITIONALLY, above the scaffold
-          # branch. Its contract-model rules — required fields, driver patterns — hold
-          # whatever else the repo has or has not configured, and while this sat below
-          # the branch, a scaffold-shaped repo had nothing read its definition at all:
-          # this job short-circuited before analitiq-validate saw the file, and
-          # `conformance-gate` only ever reads `kind`. Three repos were live in that
-          # state — clickhouse, duckdb and mariadb — each reporting a green on the one
-          # required check over a real 2 KB definition, clickhouse's missing
-          # `connector_id` outright.
-          #
-          # Coverage is anchored on the connector: this same call discovers the
-          # sibling type-map-read.json and endpoints/ from definition/ and fails if an
-          # endpoint native is unresolved by the read map.
+          # Coverage is anchored on the connector: this call discovers the sibling
+          # type-map-read.json and endpoints/ from definition/ and fails if an endpoint
+          # native is unresolved by the read map.
           echo "--- definition/connector.json ---"
-          set +e
-          REPORT="$(analitiq-validate --document definition/connector.json --semantic-only)"
-          REPORT_RC=$?
-          set -e
-          printf '%s\n' "$REPORT"
-
-          # Decide what the template, and only the template, is allowed to be excused.
-          # -P for the same reason the conformance gate uses it: this step's cwd is the
-          # PR's own checkout, and a root-level json.py would otherwise decide the
-          # verdict.
-          REPORT="$REPORT" REPORT_RC="$REPORT_RC" python3 -P - <<'PY'
-          import json, os, pathlib, sys
-
-          report = os.environ["REPORT"]
-          rc = int(os.environ["REPORT_RC"])
-
-          def summary(text):
-              path = os.environ.get("GITHUB_STEP_SUMMARY")
-              if path:
-                  with open(path, "a", encoding="utf-8") as fh:
-                      fh.write(text + "\n")
-
-          if rc == 0:
-              sys.exit(0)
-
-          # Unparseable output does not get the benefit of the doubt: a non-zero exit
-          # this step cannot read is a failure, not a finding to weigh.
-          try:
-              findings = json.loads(report)["findings"]
-              if not isinstance(findings, list) or not all(
-                  isinstance(f, dict) for f in findings
-              ):
-                  raise TypeError("findings is not a list of objects")
-          except (json.JSONDecodeError, KeyError, TypeError) as err:
-              sys.exit(
-                  f"analitiq-validate exited {rc} and its output is not a report this "
-                  f"step can read ({err}). Refusing to treat that as a pass."
-              )
-
-          # Severity decides everything below, so an unrecognised one must not simply
-          # fall out of `errors` and disappear. VALIDATOR_VERSION is set in org/repo
-          # settings, not in this file, so the validator moves without this filter
-          # being reread — and without this check, a severity it has never seen would
-          # vanish silently on any run that excuses anything at all.
-          KNOWN_SEVERITIES = {"error", "warning"}
-          unclassified = sorted(
-              {
-                  str(f.get("severity"))
-                  for f in findings
-                  if f.get("severity") not in KNOWN_SEVERITIES
-              }
-          )
-          if unclassified:
-              sys.exit(
-                  f"analitiq-validate reported finding severities this step does not "
-                  f"recognise ({', '.join(unclassified)}). Refusing to classify a "
-                  f"report it cannot read."
-              )
-
-          errors = [f for f in findings if f["severity"] == "error"]
-
-          # WHO may be excused. The template ships connector_id "replace-me" and every
-          # authored repo replaces it, so this identifies the scaffold itself. Keying
-          # on its silhouette instead — no endpoints and no type map, as this filter
-          # first did — also matched authored connectors: clickhouse is exactly that
-          # shape with a real 2 KB definition, and would have gone green over a missing
-          # read map the moment its connector_id defect was fixed. `version == "0.0.0"`
-          # fails as a discriminator for the same reason; clickhouse sits there too.
-          #
-          # WHAT is excused. Exactly one validator, type-map-coverage, whose only
-          # reachable error in this state is "connector requires sibling
-          # type-map-read.json; missing" — true of the template by construction, and
-          # the one finding a generated repo cannot avoid on its first PR. Nothing
-          # else, for anyone: that is what keeps clickhouse's missing connector_id and
-          # duckdb's malformed driver red.
-          try:
-              connector_id = json.loads(
-                  pathlib.Path("definition/connector.json").read_text(encoding="utf-8")
-              ).get("connector_id")
-          except (OSError, json.JSONDecodeError, AttributeError):
-              # Unreadable here means the validator has already failed on it, and its
-              # findings stand unexcused.
-              connector_id = None
-          untouched_scaffold = connector_id == "replace-me"
-          excused = {
-              i for i, f in enumerate(errors)
-              if untouched_scaffold and f.get("validator") == "type-map-coverage"
-          }
-          remaining = [f for i, f in enumerate(errors) if i not in excused]
-
-          def annotate(level, prefix, seq):
-              """One annotation per DISTINCT finding.
-
-              Deduplicated because the validator repeats a finding per offending
-              node — sevdesk emits the same increment_by error 25 times — and 25
-              identical annotations bury the rest. The counts in the exit messages
-              below are the true ones, not these.
-
-              Escaped because `path` and `message` quote the PR's own definition:
-              a newline in either would otherwise end this workflow command and let
-              the rest of the string be parsed as a new one.
-              """
-              seen = set()
-              for f in seq:
-                  line = (
-                      f"{f.get('validator')} @ {f.get('path')}: "
-                      f"{f.get('message', '')}"
-                  )
-                  if line in seen:
-                      continue
-                  seen.add(line)
-                  safe = (
-                      line.replace("%", "%25")
-                      .replace("\r", "%0D")
-                      .replace("\n", "%0A")
-                  )
-                  print(f"::{level}::{prefix}{safe}")
-
-          # ::warning::, not ::notice::, and written to the step summary as well. A
-          # tolerated error on the connector document is the most consequential thing
-          # this step can report while still exiting 0, and an annotation alone is
-          # ephemeral — the summary is the durable record. Without this, a green here
-          # would claim the document is clean when a finding on it was suppressed.
-          annotate(
-              "warning",
-              "Untouched template scaffold, tolerating — ",
-              [errors[i] for i in sorted(excused)],
-          )
-          annotate("error", "", remaining)
-
-          if excused:
-              summary(
-                  f"### Definition validation: {len(excused)} finding(s) tolerated\n\n"
-                  f"`definition/connector.json` still carries the template's "
-                  f"placeholder `connector_id`, so this repo is an untouched scaffold "
-                  f"and its `type-map-coverage` error(s) were tolerated on that basis "
-                  f"— see this step's annotations. A green here does NOT mean the "
-                  f"connector document is clean; it means the only thing wrong with it "
-                  f"is that nobody has filled it in yet."
-              )
-
-          if remaining:
-              sys.exit(
-                  f"definition/connector.json has {len(remaining)} error finding(s)"
-                  + (" that being an untouched template scaffold does not excuse."
-                     if untouched_scaffold else ".")
-              )
-          # Every error was excused, but the exit code was still non-zero — so it must
-          # have been explained by the findings we just accounted for. If it was not,
-          # say so rather than converting an unexplained failure into a pass.
-          if not excused:
-              sys.exit(
-                  f"analitiq-validate exited {rc} but reported no error findings this "
-                  f"step could account for. Refusing to treat that as a pass."
-              )
-          PY
-
-          # Report that two of the three passes had no input. Annotated and summarised
-          # rather than a bare `echo`, because this is the one REQUIRED check in the
-          # workflow — an invisible skip here is worth more than a visible one anywhere
-          # else, and until now this path printed a single log line calling the repo an
-          # "unconfigured template scaffold" over definitions that were nothing of the
-          # kind.
-          #
-          # Deliberately NOT an early exit any more. The loops below are already
-          # guarded — an empty ENDPOINTS array iterates zero times, and each type map
-          # is tested for existence — so exiting here bought nothing and skipped one
-          # real case: a write map with no read map (kinds file, s3, stdout) reached
-          # `exit 0` with the log claiming the type-map pass had nothing to run
-          # against, while definition/type-map-write.json sat there unvalidated.
-          if [ "$SCAFFOLD" = true ]; then
-            echo "::warning::Definition rule pass PARTIAL: no definition/endpoints/*.json and no definition/type-map-read.json, so the endpoint pass and the read-map pass had no input."
-            {
-              echo "### Definition validation: PARTIAL"
-              echo
-              echo "No \`definition/endpoints/*.json\` and no \`definition/type-map-read.json\`, so the endpoint pass and the read-map pass had no input."
-              echo
-              echo "\`definition/connector.json\` **was** validated, as is any other definition document present."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          analitiq-validate --document definition/connector.json --semantic-only
 
           # Type-map rule checks (read always; write for database connectors).
           for m in definition/type-map-read.json definition/type-map-write.json; do
@@ -333,11 +111,18 @@ jobs:
             fi
           done
 
-          # Per-endpoint annotation checks.
-          for ep in "${ENDPOINTS[@]}"; do
-            echo "--- $ep ---"
-            analitiq-validate --document "$ep" --semantic-only
-          done
+          # Per-endpoint annotation checks. Trailing slash so a SYMLINKED endpoints/ is
+          # descended, and through a file so a failing find fails the step instead of
+          # yielding an empty list indistinguishable from "no endpoints".
+          if [ -d definition/endpoints ]; then
+            ENDPOINT_LIST="$(mktemp)"
+            trap 'rm -f "$ENDPOINT_LIST"' EXIT
+            find definition/endpoints/ -name "*.json" -type f -print0 > "$ENDPOINT_LIST"
+            while IFS= read -r -d '' ep; do
+              echo "--- $ep ---"
+              analitiq-validate --document "$ep" --semantic-only
+            done < "$ENDPOINT_LIST"
+          fi
 
   # Decides whether tier-1 conformance can say anything about this repo, in its own
   # job so that "cannot assess" renders as a grey *Skipped* job rather than as a
@@ -429,12 +214,11 @@ jobs:
           # that split, `kind: Database` or `kind: databse` reads as "no checks for
           # this kind" and skips, and no conformance job then runs to have the kit read
           # the file either — so a one-character PR would silently revert this whole
-          # gate. `validate` does now hand every connector.json to analitiq-validate
-          # unconditionally, so it is a second reader rather than none at all; keep
-          # this check anyway, because it is what makes an unknown kind fail HERE
-          # rather than turn into a skip that satisfies a required check. Duplicating a
-          # closed enum risks going stale, but stale here means a red on a valid new
-          # kind: visible and immediately fixable, unlike a silent skip.
+          # gate. `validate` is a second reader and would also fail such a file, but it
+          # is a different job: what this check buys is that an unknown kind fails HERE
+          # rather than turning into a skip, and a skip satisfies a required check.
+          # Duplicating a closed enum risks going stale, but stale here means a red on
+          # a valid new kind: visible and immediately fixable, unlike a silent skip.
           KNOWN_KINDS = {"api", "database", "nosql", "document", "file", "s3", "stdout"}
 
           # Mirrors APPLIES_TO_KINDS in the kit's own tier-1 check modules
@@ -458,9 +242,9 @@ jobs:
 
           # A missing connector.json is already a hard failure in `validate`, which runs
           # against this same commit: every caller stub invokes this file from a single
-          # job, so both jobs always share a run and a checkout, and validate's check
-          # sits above its own scaffold skip, so it is unconditional. Conformance defers
-          # rather than reporting one defect as two red checks.
+          # job, so both jobs always share a run and a checkout, and validate has no
+          # conditional path — it validates every document on every repo. Conformance
+          # defers rather than reporting one defect as two red checks.
           definition_path = root / "definition" / "connector.json"
           if not definition_path.is_file():
               print(
@@ -480,12 +264,10 @@ jobs:
               emit("run", "false")
               sys.exit(0)
 
-          # Present-but-unreadable gets no such deference. `validate` does now hand the
-          # file to analitiq-validate on every path — it did not when this comment was
-          # first written, and the fix for that is in this same PR — but deference is
-          # still wrong here: this gate has to parse the file to answer its own
+          # Present-but-unreadable gets no such deference, even though `validate` would
+          # also fail on it: this gate has to parse the file to answer its own
           # question, and a gate that cannot read its input must say so rather than
-          # forward a verdict it did not reach. Same reasoning as the pyproject.toml
+          # forward a verdict it never reached. Same reasoning as the pyproject.toml
           # branch below: unparseable is a defect, not an absence.
           try:
               definition = json.loads(definition_path.read_text(encoding="utf-8"))
