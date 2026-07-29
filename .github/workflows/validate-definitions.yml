@@ -59,8 +59,10 @@ jobs:
       # native types its read map doesn't resolve — the defect that shipped
       # `sevdesk` broken.
       #
-      # Pinned to an exact PyPI pre-release. --pre is required because these are
-      # pre-releases. analitiq-contract-models is installed at the SAME release as
+      # Pinned to an exact PyPI pre-release. (--pre is redundant here — pip honours
+      # an exact `==` pin of a pre-release on its own — but harmless, and left in
+      # place so this step is not re-litigated on every read.)
+      # analitiq-contract-models is installed at the SAME release as
       # analitiq-validator: the validator imports the contract models, and leaving
       # the models unpinned lets pip float them to a newer pre-release whose shape
       # the pinned validator can't import (e.g. rc1 validator + rc13 models →
@@ -90,6 +92,11 @@ jobs:
           #
           # connector.json is mandatory in every repo, scaffold included, so this
           # check sits outside the skip below.
+          #
+          # Keep it unconditional: the `conformance` job below deliberately does
+          # NOT re-report a missing connector.json, so this is the only check that
+          # catches it. Guarding it behind an `if:` or a path filter would make that
+          # file's absence pass both jobs.
           if [ ! -f definition/connector.json ]; then
             echo "ERROR: definition/connector.json is missing."
             exit 1
@@ -147,6 +154,22 @@ jobs:
   # all. Tier 2 stays opt-in per connector repo.
   conformance:
     runs-on: ubuntu-latest
+
+    # Merging this file must not switch the gate on everywhere at once. Every caller
+    # stub resolves this workflow at @main with no tag or SHA pin, so a live job
+    # reaches all 13 connector repos on their next PR run — including repos whose
+    # connector does not pass tier 1 yet, and including the window before the pinned
+    # CDK is on PyPI. Turn it on deliberately, org-wide, by setting the org variable
+    # CDK_CONFORMANCE_ENABLED to 'true'.
+    #
+    # A job-level `if` is also the only construct that renders as *Skipped* (grey)
+    # rather than as a passing check, so "switched off" does not read as "passed" in
+    # the checks list. Note the limit of that: GitHub treats a skipped job as
+    # SATISFYING a required status check, so this is honest reporting, not
+    # protection. 'validate / conformance' must not be added to the org ruleset
+    # while any repo can take a skip path — see the gate step below.
+    if: vars.CDK_CONFORMANCE_ENABLED == 'true'
+
     permissions:
       contents: read
     env:
@@ -158,12 +181,21 @@ jobs:
       # variables and would otherwise expand it to an empty, invalid pip spec.
       #
       # The floor must name a release whose kit FAILS a connector kind it cannot
-      # assess (analitiq-engine#414). 0.2.0rc1 predates that fix: run against an
-      # `api` connector it reports 4 passed / 20 skipped and exits 0, so green there
-      # means "not assessed", not "passed". Never set this floor below 0.2.0rc2.
+      # assess (analitiq-engine#414). 0.2.0rc1 predates that fix: run against the
+      # `pipedrive` definition it reports 4 passed / 20 skipped and exits 0, so green
+      # there means "not assessed", not "passed". The install step below enforces the
+      # floor on the RESOLVED value, since the variable that actually decides is set
+      # in org/repo settings where this comment is not visible.
       CDK_VERSION: ${{ vars.CDK_VERSION || '0.2.0rc2' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Unlike `validate`, which only ever parses JSON, this job executes
+          # PR-controlled code three times over: the fork's build backend under
+          # build isolation, its requirements.txt, and connector.py itself when
+          # pytest imports it. Don't leave the job token in .git/config for that
+          # code to read. Corollary: caller stubs must never gain `secrets: inherit`.
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -175,10 +207,13 @@ jobs:
           set -euo pipefail
 
           # A missing connector.json is already a hard failure in `validate`, which
-          # runs against this same commit. Conformance defers to it rather than
-          # reporting one defect as two red checks.
+          # runs against this same commit: every caller stub invokes this file from
+          # a single job, so both jobs always share a run and a checkout, and
+          # validate's check sits above its own scaffold skip, so it is
+          # unconditional. Conformance defers rather than reporting one defect as
+          # two red checks.
           if [ ! -f definition/connector.json ]; then
-            echo "No definition/connector.json — reported by the validate job; skipping conformance."
+            echo "::warning::No definition/connector.json — tier-1 conformance NOT ASSESSED. The validate job is expected to fail on the same file; if it did not, look there first."
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -186,47 +221,115 @@ jobs:
           # Tier 1 imports the connector class through its entry point, so it needs
           # an installable package. Definition-only repos have no pyproject.toml and
           # nothing to import — `pip install .` there fails outright with
-          # "Directory '.' is not installable". Those repos are ungated until they
-          # are packaged, which is exactly why 'validate / conformance' must not be
-          # added to the org ruleset yet: as a required context it would be
-          # vacuously green wherever this branch is taken.
+          # "Directory '.' is not installable".
+          #
+          # Packaging such a repo is NOT a no-op for `kind: api`: tier 1 declares
+          # APPLIES_TO_KINDS = ("database",) in both test_read_path and
+          # test_rendering, so against the post-#414 kit a packaged api connector
+          # FAILS the applicability check rather than passing it. Real API coverage
+          # is analitiq-engine#415; until it lands, the packaging path is open to
+          # database connectors only.
+          #
+          # Every repo that takes this branch is ungated, which is why
+          # 'validate / conformance' cannot become a required ruleset context yet:
+          # a required check is satisfied by this path while verifying nothing.
           if [ ! -f pyproject.toml ]; then
-            echo "::notice::No pyproject.toml — definition-only repo with no connector class to import; skipping tier-1 conformance."
+            echo "::warning::No pyproject.toml — tier-1 conformance NOT ASSESSED: definition-only repo with no connector class to import."
+            {
+              echo "### Tier-1 conformance: NOT ASSESSED"
+              echo
+              echo "This repo ships definitions only (no \`pyproject.toml\`), so there is no"
+              echo "connector class to import and \`pip install .\` would fail. Nothing about"
+              echo "the connector's Python was verified by this run."
+            } >> "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "run=true" >> "$GITHUB_OUTPUT"
 
-      # An exact `==` pin of a pre-release is honoured on its own, so no --pre here:
-      # unlike the validator step above, adding it would also let transitive
-      # dependencies float onto their own pre-releases.
-      #
-      # The echo is deliberate, for the same reason as in `validate`: the version
-      # lives in org/repo settings rather than in this file, so the run log is the
-      # only record of which CDK release actually gated a given PR.
+      # Guards are `!= 'false'` rather than `== 'true'` so that a gate which fails to
+      # produce a decision runs the suite instead of silently skipping it. (An `if:`
+      # without a status function still carries the implicit success() check, so this
+      # cannot resurrect the step after an earlier failure.)
       - name: Install pinned CDK + this connector
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run != 'false'
         run: |
           set -euo pipefail
-          echo "Conformance CDK: ${CDK_VERSION}"
-          python3 -m pip install "analitiq-cdk[conformance]==${CDK_VERSION}"
+          echo "Conformance CDK (requested): ${CDK_VERSION}"
+          python3 -m pip install --quiet packaging
 
-          # Required for tier 1, not just tier 2: the suite resolves the connector's
-          # dialect against its INSTALLED driver requirements and fails — not skips —
-          # when no driver derives. That is the specific breakage this job exists to
-          # catch, so the requirements have to be really installed.
-          python3 -m pip install .
+          # The floor documented above governs only the literal in this file. The
+          # value that actually gates a normal PR comes from an org or repo variable,
+          # so assert it here: a stale override must not silently restore a kit that
+          # exits 0 on a connector kind it cannot assess.
+          python3 - <<'PY'
+          import os, sys
+          from packaging.version import Version
+          floor = Version("0.2.0rc2")
+          got = Version(os.environ["CDK_VERSION"])
+          if got < floor:
+              sys.exit(
+                  f"CDK_VERSION={got} is below the {floor} floor. Releases before "
+                  f"{floor} exit 0 on a connector kind they cannot assess "
+                  f"(analitiq-engine#414), which makes this gate vacuous. Refusing to run."
+              )
+          PY
 
-      # -p cdk.conformance.plugin registers the --connector-dir option; the kit is
-      # deliberately not a pytest11 auto-load entry point. Discovery is by the
-      # entry-point groups analitiq.source_connectors / analitiq.destination_connectors,
-      # keyed on name == connector_id, and a database connector with no custom class
-      # falls back to GenericSQLConnector. No conftest, fixture, or opt-out file is
-      # required from a connector repo: applicability is derived from connector.json
-      # and there is no waiver mechanism by design.
+          # ONE resolution for the CDK and the connector. Two separate `pip install`
+          # calls do not share one: the second cannot see the first's constraints and
+          # will downgrade a shared dependency to satisfy requirements.txt, at which
+          # point pip prints "ERROR: ... dependency conflicts" and still exits 0
+          # (verified). A gate running against a different CDK than the one it just
+          # echoed is worse than no gate. Installing the connector is required for
+          # tier 1, not just tier 2 — the suite resolves a SQLAlchemy dialect for the
+          # declared driver and fails, not skips, when the dialect package is absent
+          # from the connector's requirements or sqlalchemy_registry_name is wrong.
+          python3 -m pip install "analitiq-cdk[conformance]==${CDK_VERSION}" .
+
+          # pip exits 0 on an inconsistent resolution; pip check exits 1. This is the
+          # step that turns that warning into a failure.
+          python3 -m pip check
+
+          # ...and prove the pin survived, so the echoed version is a record rather
+          # than a claim.
+          python3 - <<'PY'
+          import os, sys
+          from importlib.metadata import version
+          from packaging.version import Version
+          want, got = os.environ["CDK_VERSION"], version("analitiq-cdk")
+          if Version(got) != Version(want):
+              sys.exit(f"CDK pin not honoured: requested {want}, installed {got}")
+          print(f"Conformance CDK (installed, verified): {got}")
+          PY
+
       - name: Tier 1 conformance
-        if: steps.gate.outputs.run == 'true'
-        run: >-
-          pytest -p cdk.conformance.plugin
-          --pyargs cdk.conformance.tier1 --connector-dir .
+        if: steps.gate.outputs.run != 'false'
+        run: |
+          set -euo pipefail
+
+          # -p cdk.conformance.plugin registers the --connector-dir option; the kit
+          # is deliberately not a pytest11 auto-load entry point. Discovery is by the
+          # entry-point groups analitiq.source_connectors /
+          # analitiq.destination_connectors, keyed (case-insensitively) on
+          # name == connector_id, and a database connector with no custom class falls
+          # back to GenericSQLConnector. No conftest, fixture, or opt-out file is
+          # required from a connector repo: applicability is derived from
+          # connector.json and there is no waiver mechanism by design.
+          #
+          # -o addopts= -o pythonpath= keeps that true. pytest resolves the
+          # CONNECTOR's pyproject.toml as its configfile (verified: rootdir and
+          # configfile land on the connector repo even from a neutral cwd), so any
+          # repo's own [tool.pytest.ini_options] silently reconfigures this shared
+          # gate — mysql already ships addopts and pythonpath, an addopts naming a
+          # missing plugin hard-fails an otherwise valid PR, and `addopts = "--co"`
+          # would exit 0 having executed nothing. Per-repo pytest ini is exactly the
+          # waiver mechanism this suite is designed not to have.
+          #
+          # -rs prints skip reasons, so "passed" stays distinguishable from "not
+          # assessed" in the log rather than being inferred from a bare count.
+          pytest -p cdk.conformance.plugin \
+            --pyargs cdk.conformance.tier1 \
+            --connector-dir . \
+            -o addopts= -o pythonpath= \
+            -rs
