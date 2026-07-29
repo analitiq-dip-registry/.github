@@ -152,7 +152,12 @@ jobs:
     permissions:
       contents: read
     outputs:
+      # Whether the conformance job runs at all — "can the kit assess a connector
+      # of this kind?".
       run: ${{ steps.gate.outputs.run }}
+      # Whether that job's pip resolution includes this repo — "is there a package
+      # to install?". Only meaningful when `run` is 'true'.
+      install_self: ${{ steps.gate.outputs.install_self }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -165,21 +170,45 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Detect an installable connector
+      - name: Decide whether tier-1 conformance can assess this repo
         id: gate
         run: |
           set -euo pipefail
 
+          # Two questions, answered separately (.github#11):
+          #
+          #   run          — can the kit assess a connector of this KIND at all?
+          #                  Answered by `kind` in definition/connector.json.
+          #   install_self — is there a package to add to the CDK's pip resolution?
+          #                  Answered by the `[project]` table in pyproject.toml.
+          #
+          # Keying `run` on the package — as this gate did when it landed — skipped
+          # every thin connector. A `kind: database` repo that ships no class of its
+          # own is a path the CDK explicitly supports: with no entry point matching
+          # connector_id, cdk/conformance/target.py resolves GenericSQLConnector, and
+          # the definition, type-map and dialect checks all still apply. Skipping
+          # those repos reported "not assessed" as a permanently green check, which
+          # is the exact failure mode this job exists to remove.
+          #
           # Parse the TOML rather than grepping for a `[project]` header. `[ project ]`,
           # `[project] # comment` and `["project"]` are all valid TOML declaring a real
-          # package, and all three miss a `^\[project\]$` grep — and because a missed
-          # declaration lands on the skip path, every such false negative would be a
-          # silently ungated repo, which is the one direction this file cannot afford
-          # to be wrong in.
+          # package, and all three miss a `^\[project\]$` grep. A false negative there
+          # no longer skips the job, but it still drops `.` from the install, so the
+          # suite would audit GenericSQLConnector in place of the repo's own class —
+          # caught downstream by the verify step, but as a confusing failure.
           python3 - <<'PY'
-          import os, pathlib, sys, tomllib
+          import json, os, pathlib, sys, tomllib
 
           root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+
+          # Mirrors APPLIES_TO_KINDS in the kit's own tier-1 check modules
+          # (test_read_path, test_rendering). Hardcoding it duplicates a declaration
+          # that lives in the CDK, tolerable only while the answer is one kind: when
+          # analitiq-engine#415 lands API coverage, this set has to grow with it or
+          # every api repo stays silently ungated. Drift in the other direction is
+          # self-reporting — a kind this gate admits that the kit cannot assess fails
+          # test_a_check_applies_to_this_connector_kind (analitiq-engine#414) red.
+          ASSESSABLE_KINDS = {"database"}
 
           def emit(name, value):
               with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
@@ -196,7 +225,8 @@ jobs:
           # job, so both jobs always share a run and a checkout, and validate's check
           # sits above its own scaffold skip, so it is unconditional. Conformance defers
           # rather than reporting one defect as two red checks.
-          if not (root / "definition" / "connector.json").is_file():
+          definition_path = root / "definition" / "connector.json"
+          if not definition_path.is_file():
               print(
                   "::warning::No definition/connector.json — tier-1 conformance NOT "
                   "ASSESSED. The validate job is expected to fail on the same file; "
@@ -204,6 +234,34 @@ jobs:
               )
               emit("run", "false")
               sys.exit(0)
+
+          # Present-but-unreadable gets no such deference, because `validate` does not
+          # reliably cover it: its rule pass sits behind a scaffold skip (no endpoints
+          # and no type-map-read.json), and a repo in that shape never hands the file
+          # to analitiq-validate at all. Deferring here would leave nothing red
+          # anywhere. Same reasoning as the pyproject.toml branch below: unparseable is
+          # a defect, not an absence.
+          try:
+              definition = json.loads(definition_path.read_text(encoding="utf-8"))
+          except (json.JSONDecodeError, UnicodeDecodeError) as err:
+              sys.exit(f"definition/connector.json does not parse: {err}")
+          if not isinstance(definition, dict):
+              sys.exit(
+                  f"definition/connector.json must be a JSON object, got "
+                  f"{type(definition).__name__}."
+              )
+
+          # Fail rather than treating an absent kind as an unassessable one: the skip
+          # path is for connectors the kit has no checks for, not for definitions it
+          # cannot read. load_target refuses the same file for the same reason, but
+          # only for a repo that gets past this gate.
+          kind = definition.get("kind")
+          if not isinstance(kind, str) or not kind:
+              sys.exit(
+                  "definition/connector.json declares no kind. Every connector "
+                  "definition must declare one, and the conformance kit selects its "
+                  "checks from it."
+              )
 
           pyproject = root / "pyproject.toml"
           declares_package = False
@@ -213,8 +271,8 @@ jobs:
                       pyproject.read_text(encoding="utf-8")
                   )
               except (tomllib.TOMLDecodeError, UnicodeDecodeError) as err:
-                  # Unparseable is a defect, not an absence. Falling through to the
-                  # skip would turn a broken package declaration into a green PR.
+                  # Unparseable is a defect, not an absence. Falling through would turn
+                  # a broken package declaration into a run that audits CDK code.
                   hint = ""
                   if pyproject.read_bytes().startswith(b"\xef\xbb\xbf"):
                       hint = (
@@ -223,16 +281,13 @@ jobs:
                       )
                   sys.exit(f"pyproject.toml is present but does not parse: {err}{hint}")
 
-          if declares_package:
-              emit("run", "true")
-              sys.exit(0)
-
           # Shipping connector code while declaring no installable package is a broken
-          # connector, not an unassessable one: the engine resolves the class through
-          # an entry point that only an installed package provides. Without this, a PR
-          # that deletes or breaks pyproject.toml would silently convert an audited
-          # connector into an unaudited one, reported as "definition-only repo".
-          if (root / "connector.py").is_file():
+          # connector, not a thin one: the engine resolves the class through an entry
+          # point that only an installed package provides. Without this, a PR that
+          # deletes or breaks pyproject.toml would silently convert an audited
+          # connector into one audited through the CDK's generic fallback. Checked for
+          # every kind, since the packaging contract does not depend on the kind.
+          if (root / "connector.py").is_file() and not declares_package:
               detail = (
                   "pyproject.toml declares no [project] table"
                   if pyproject.is_file()
@@ -247,30 +302,46 @@ jobs:
                   f"here: the registry standardises on pyproject.toml.)"
               )
 
-          # Definition-only repo: nothing to import, and `pip install .` would fail with
-          # "Directory '.' is not installable".
+          # No check in the suite certifies anything about this kind, so a run would
+          # report "not assessed" as "passed" — analitiq-engine#414 one layer up.
           #
-          # Packaging such a repo is NOT a no-op for `kind: api`: tier 1 declares
-          # APPLIES_TO_KINDS = ("database",) in both test_read_path and test_rendering,
-          # so against the post-#414 kit a packaged api connector FAILS the applicability
-          # check rather than passing it. Real API coverage is analitiq-engine#415; until
-          # it lands, the packaging path is open to database connectors only.
+          # Reached whether or not the repo declares a package: an api connector that
+          # packages itself skips here rather than failing the kit's own applicability
+          # check, which is the same verdict said in the cheaper place. Packaging one
+          # is still not the way to get it gated — analitiq-engine#415 is.
           #
           # Every repo that lands here is ungated, which is why 'validate / conformance'
           # cannot become a required ruleset context yet: GitHub counts a skipped job as
           # SATISFYING a required check, so making it required now would mean "verified
           # nothing" scores as "passed".
-          print(
-              "::warning::No [project] table in pyproject.toml — tier-1 conformance NOT "
-              "ASSESSED: definition-only repo with no connector class to import."
-          )
-          summary(
-              "### Tier-1 conformance: NOT ASSESSED\n\n"
-              "This repo declares no Python package (no `[project]` table in a "
-              "`pyproject.toml`), so there is no connector class to import. Nothing "
-              "about the connector's Python was verified by this run."
-          )
-          emit("run", "false")
+          if kind not in ASSESSABLE_KINDS:
+              print(
+                  f"::warning::Tier-1 conformance NOT ASSESSED: the kit carries no "
+                  f"check for connector kind {kind!r}."
+              )
+              summary(
+                  f"### Tier-1 conformance: NOT ASSESSED\n\n"
+                  f"This connector declares `kind: {kind}`. Every tier-1 check that "
+                  f"certifies connector behaviour declares "
+                  f"`APPLIES_TO_KINDS = (\"database\",)`, so none of them apply here "
+                  f"and nothing about this connector was verified by this run. API "
+                  f"coverage is analitiq-engine#415."
+              )
+              emit("run", "false")
+              sys.exit(0)
+
+          # Assessable kind. The package decides only WHAT gets installed: a packaged
+          # connector adds `.` to the single pip resolution so its own class and driver
+          # requirements are importable; a thin one installs the CDK alone and is
+          # audited through GenericSQLConnector.
+          emit("run", "true")
+          emit("install_self", "true" if declares_package else "false")
+          if not declares_package:
+              print(
+                  f"Thin connector (kind={kind!r}, no [project] table): the CDK's "
+                  f"GenericSQLConnector stands in for the connector class. The "
+                  f"definition, type-map and dialect checks still apply."
+              )
           PY
 
   # Tier-1 CDK conformance (.github#8). The `validate` job never imports
@@ -325,6 +396,10 @@ jobs:
       # verify step certified a resolution the suite never performed, and it did so
       # with an affirmative green rather than an error.
       ANALITIQ_CONNECTOR_DIR: ${{ github.workspace }}
+
+      # 'true' when the gate found a [project] table, 'false' for a thin connector.
+      # Consumed only by the install step below.
+      INSTALL_SELF: ${{ needs.conformance-gate.outputs.install_self }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -382,7 +457,29 @@ jobs:
           # tier 1, not just tier 2 — the suite resolves a SQLAlchemy dialect for the
           # declared driver and fails, not skips, when the dialect package is absent
           # from the connector's requirements or sqlalchemy_registry_name is wrong.
-          python3 -m pip install "analitiq-cdk[conformance]==${CDK_VERSION}" .
+          #
+          # `.` is appended only for a repo that declares a package. A thin connector
+          # has nothing to install — `pip install .` fails with "Directory '.' is not
+          # installable" — and the kit audits it through GenericSQLConnector instead.
+          TARGETS=("analitiq-cdk[conformance]==${CDK_VERSION}")
+          case "${INSTALL_SELF}" in
+            true)
+              TARGETS+=(".")
+              ;;
+            false)
+              echo "Thin connector: installing the CDK alone, with no local package."
+              ;;
+            *)
+              # Never fall through to the thin path on an unset value: for a packaged
+              # repo it would install no connector class, and the suite would audit
+              # CDK code. The verify step below catches that, but under a title that
+              # points at entry points rather than at this.
+              echo "INSTALL_SELF is '${INSTALL_SELF}', expected 'true' or 'false' —" >&2
+              echo "the conformance-gate job did not emit its install_self output." >&2
+              exit 1
+              ;;
+          esac
+          python3 -m pip install "${TARGETS[@]}"
 
           # pip exits 0 on an inconsistent resolution; pip check exits 1. This is the
           # step that turns that warning into a failure.
