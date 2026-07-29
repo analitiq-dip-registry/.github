@@ -158,58 +158,108 @@ jobs:
         with:
           persist-credentials: false
 
+      # For tomllib below. Don't rely on the runner image's system python3: this
+      # gate must not start skipping repos the day ubuntu-latest moves to an image
+      # whose default python predates 3.11.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Detect an installable connector
         id: gate
         run: |
           set -euo pipefail
 
-          # A missing connector.json is already a hard failure in `validate`, which
-          # runs against this same commit: every caller stub invokes this file from
-          # a single job, so both jobs always share a run and a checkout, and
-          # validate's check sits above its own scaffold skip, so it is
-          # unconditional. Conformance defers rather than reporting one defect as
-          # two red checks.
-          if [ ! -f definition/connector.json ]; then
-            echo "::warning::No definition/connector.json — tier-1 conformance NOT ASSESSED. The validate job is expected to fail on the same file; if it did not, look there first."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # Parse the TOML rather than grepping for a `[project]` header. `[ project ]`,
+          # `[project] # comment` and `["project"]` are all valid TOML declaring a real
+          # package, and all three miss a `^\[project\]$` grep — and because a missed
+          # declaration lands on the skip path, every such false negative would be a
+          # silently ungated repo, which is the one direction this file cannot afford
+          # to be wrong in.
+          python3 - <<'PY'
+          import os, pathlib, sys, tomllib
 
-          # Tier 1 imports the connector class through its entry point, so it needs
-          # an installable package. Definition-only repos have nothing to import and
-          # `pip install .` there fails with "Directory '.' is not installable".
-          #
-          # Test for a [project] table rather than the file: a pyproject.toml
-          # carrying only [tool.*] config is not a package declaration, but pip's
-          # legacy setuptools fallback will still "install" something from it, which
-          # would let a definition-only repo past this gate and produce a green run
-          # that imported nothing of the connector's.
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+
+          def emit(name, value):
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"{name}={value}\n")
+
+          def summary(text):
+              path = os.environ.get("GITHUB_STEP_SUMMARY")
+              if path:
+                  with open(path, "a", encoding="utf-8") as fh:
+                      fh.write(text + "\n")
+
+          # A missing connector.json is already a hard failure in `validate`, which runs
+          # against this same commit: every caller stub invokes this file from a single
+          # job, so both jobs always share a run and a checkout, and validate's check
+          # sits above its own scaffold skip, so it is unconditional. Conformance defers
+          # rather than reporting one defect as two red checks.
+          if not (root / "definition" / "connector.json").is_file():
+              print(
+                  "::warning::No definition/connector.json — tier-1 conformance NOT "
+                  "ASSESSED. The validate job is expected to fail on the same file; "
+                  "if it did not, look there first."
+              )
+              emit("run", "false")
+              sys.exit(0)
+
+          pyproject = root / "pyproject.toml"
+          declares_package = False
+          if pyproject.is_file():
+              try:
+                  declares_package = "project" in tomllib.loads(
+                      pyproject.read_text(encoding="utf-8")
+                  )
+              except (tomllib.TOMLDecodeError, UnicodeDecodeError) as err:
+                  # Unparseable is a defect, not an absence. Falling through to the
+                  # skip would turn a broken package declaration into a green PR.
+                  sys.exit(f"pyproject.toml is present but does not parse: {err}")
+
+          if declares_package:
+              emit("run", "true")
+              sys.exit(0)
+
+          # Shipping connector code while declaring no installable package is a broken
+          # connector, not an unassessable one: the engine resolves the class through
+          # an entry point that only an installed package provides. Without this, a PR
+          # that deletes or breaks pyproject.toml would silently convert an audited
+          # connector into an unaudited one, reported as "definition-only repo".
+          if (root / "connector.py").is_file():
+              sys.exit(
+                  "connector.py is present but pyproject.toml declares no [project] "
+                  "table. A connector that ships Python must declare an installable "
+                  "package — the engine resolves its class through an entry point that "
+                  "only an installed package provides, and tier-1 conformance cannot "
+                  "import it otherwise."
+              )
+
+          # Definition-only repo: nothing to import, and `pip install .` would fail with
+          # "Directory '.' is not installable".
           #
           # Packaging such a repo is NOT a no-op for `kind: api`: tier 1 declares
-          # APPLIES_TO_KINDS = ("database",) in both test_read_path and
-          # test_rendering, so against the post-#414 kit a packaged api connector
-          # FAILS the applicability check rather than passing it. Real API coverage
-          # is analitiq-engine#415; until it lands, the packaging path is open to
-          # database connectors only.
+          # APPLIES_TO_KINDS = ("database",) in both test_read_path and test_rendering,
+          # so against the post-#414 kit a packaged api connector FAILS the applicability
+          # check rather than passing it. Real API coverage is analitiq-engine#415; until
+          # it lands, the packaging path is open to database connectors only.
           #
-          # Every repo that lands here is ungated, which is why
-          # 'validate / conformance' cannot become a required ruleset context yet:
-          # GitHub counts a skipped job as SATISFYING a required check, so making it
-          # required now would mean "verified nothing" scores as "passed".
-          if ! grep -qE '^[[:space:]]*\[project\][[:space:]]*$' pyproject.toml 2>/dev/null; then
-            echo "::warning::No [project] table in pyproject.toml — tier-1 conformance NOT ASSESSED: definition-only repo with no connector class to import."
-            {
-              echo "### Tier-1 conformance: NOT ASSESSED"
-              echo
-              echo "This repo declares no Python package (no \`[project]\` table in a"
-              echo "\`pyproject.toml\`), so there is no connector class to import. Nothing"
-              echo "about the connector's Python was verified by this run."
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "run=true" >> "$GITHUB_OUTPUT"
+          # Every repo that lands here is ungated, which is why 'validate / conformance'
+          # cannot become a required ruleset context yet: GitHub counts a skipped job as
+          # SATISFYING a required check, so making it required now would mean "verified
+          # nothing" scores as "passed".
+          print(
+              "::warning::No [project] table in pyproject.toml — tier-1 conformance NOT "
+              "ASSESSED: definition-only repo with no connector class to import."
+          )
+          summary(
+              "### Tier-1 conformance: NOT ASSESSED\n\n"
+              "This repo declares no Python package (no `[project]` table in a "
+              "`pyproject.toml`), so there is no connector class to import. Nothing "
+              "about the connector's Python was verified by this run."
+          )
+          emit("run", "false")
+          PY
 
   # Tier-1 CDK conformance (.github#8). The `validate` job never imports
   # connector.py, so a connector can be green on every definition file and still
@@ -319,31 +369,57 @@ jobs:
       # Entry-point resolution failing is indistinguishable from a pass without this.
       # When no entry point in analitiq.source_connectors / analitiq.destination_connectors
       # matches connector_id, the kit substitutes its own GenericSQLConnector for
-      # `kind: database` (target.py) and the suite audits CDK code instead of the
-      # repo's. Verified: renaming postgres's entry point to `postgresql` flips
-      # test_override_surface_is_sanctioned from fail to pass — one of the three
-      # defect classes this job exists to catch — because PostgresConnector was never
-      # loaded. Nothing else in the run reports it: install, pip check, the pin
-      # assertion and -rs all stay clean.
+      # `kind: database` and the suite audits CDK code instead of the repo's. Verified:
+      # renaming postgres's entry point to `postgresql` flips
+      # test_override_surface_is_sanctioned from fail to pass — one of the three defect
+      # classes this job exists to catch — because PostgresConnector was never loaded.
+      # Nothing else in the run reports it: install, pip check, the pin assertion and
+      # -rs all stay clean.
       #
-      # The generic fallback is legitimate for a thin connector that ships no class,
-      # so this only fails when the repo HAS a connector.py and still resolved to a
-      # CDK class — i.e. the entry point does not point at it.
+      # Runs from the same directory as the suite below. `python3 -` puts the cwd
+      # on sys.path, and importlib.metadata scans sys.path, so checking from inside the
+      # checkout can see entry points the real run cannot — a checkout-resident
+      # *.egg-info is enough. Verified: from the checkout this step reported the repo's
+      # own class and exited 0 while the suite resolved GenericSQLConnector. Both must
+      # stand in the same place or this guard certifies the wrong environment.
       - name: Verify the suite will audit this repo's connector class
         run: |
           set -euo pipefail
+
+          # The same directory the suite runs from, for the reason in the comment above.
+          RUN_DIR="$RUNNER_TEMP/conformance-run"
+          mkdir -p "$RUN_DIR"
+          cd "$RUN_DIR"
           python3 - <<'PY'
           import os, pathlib, sys
-          from cdk.conformance.target import load_target
-          target = load_target(pathlib.Path(os.environ["GITHUB_WORKSPACE"]))
+          from cdk.conformance.target import ConformanceSetupError, load_target
+          from cdk.sql.generic import GenericSQLConnector
+
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          try:
+              target = load_target(root)
+          except ConformanceSetupError as err:
+              # load_target is fail-loud for far more than entry points (unreadable
+              # connector.json, malformed sql_capabilities, an empty type-map-write).
+              # Name that rather than letting a bare traceback masquerade as an
+              # entry-point problem under this step's title.
+              sys.exit(f"the conformance kit cannot load this connector: {err}")
+
           cls = target.connector_class
           origin = "none" if cls is None else f"{cls.__module__}.{cls.__qualname__}"
           print(f"connector_id: {target.connector_id!r} (kind={target.kind!r})")
           print(f"class under test: {origin}")
-          if not pathlib.Path("connector.py").exists():
+
+          # Paths are resolved off `root`, never the cwd: a cwd-relative test here
+          # would silently answer "thin connector" for every repo the moment this
+          # step runs from anywhere but the checkout — which it now does.
+          if not (root / "connector.py").is_file():
               print("no connector.py — thin connector, the CDK generic class is expected")
               sys.exit(0)
-          if cls is None or cls.__module__.split(".")[0] == "cdk":
+
+          # Identity, not a module-name prefix: this asks exactly "did the kit
+          # substitute its fallback", and stays correct if the generic class moves.
+          if cls is None or cls is GenericSQLConnector:
               sys.exit(
                   f"this repo ships connector.py but conformance resolved {origin}. No "
                   f"entry point named {target.connector_id!r} in "
@@ -362,7 +438,7 @@ jobs:
           # analitiq.source_connectors / analitiq.destination_connectors, keyed
           # (case-insensitively) on name == connector_id.
           #
-          # Run from a neutral directory and point the kit at the checkout through
+          # Run from a directory of our own and point the kit at the checkout through
           # ANALITIQ_CONNECTOR_DIR rather than --connector-dir. pytest determines its
           # rootdir before plugin options are registered, so it treats the
           # --connector-dir VALUE as a positional path: the connector repo becomes
@@ -371,13 +447,19 @@ jobs:
           # the suite is designed not to have — verified, a repo-root conftest.py with
           # `pytest_sessionfinish` setting `session.exitstatus = 0` makes a connector
           # with three real failures exit 0. Via the env var there is no positional
-          # path, rootdir stays in RUNNER_TEMP, and neither file is read (verified: the
-          # same hostile conftest then exits 1). -o addopts= -o pythonpath= is
+          # path, rootdir stays in our own directory, and neither file is read
+          # (verified: the same hostile conftest then exits 1).
+          #
+          # A dedicated subdirectory rather than RUNNER_TEMP itself, which is shared
+          # scratch: anything that drops a pytest.ini / tox.ini / setup.cfg there would
+          # reopen the same hijack one level up. -o addopts= -o pythonpath= is
           # belt-and-braces should the cwd ever move back into the checkout.
           #
           # -rs prints skip reasons, so "passed" stays distinguishable from "not
           # assessed" in the log rather than being inferred from a bare count.
-          cd "$RUNNER_TEMP"
+          RUN_DIR="$RUNNER_TEMP/conformance-run"
+          mkdir -p "$RUN_DIR"
+          cd "$RUN_DIR"
           ANALITIQ_CONNECTOR_DIR="$GITHUB_WORKSPACE" \
             pytest -p cdk.conformance.plugin \
               --pyargs cdk.conformance.tier1 \
