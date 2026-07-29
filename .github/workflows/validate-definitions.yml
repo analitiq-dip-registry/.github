@@ -124,20 +124,29 @@ jobs:
           # `mapfile < <(find …)` did, since a process substitution's status is
           # discarded.
           #
-          # The list is fed on fd 3, not stdin. On stdin the loop body inherits it, so
-          # a validator release that read stdin would swallow the remaining entries:
-          # four endpoints would be validated as one and the step would still exit 0.
-          # rc17 does not read stdin, but VALIDATOR_VERSION rolls org-wide without this
-          # file being reread, and the failure mode is a green on the one required
-          # check.
+          # Read into an array FIRST, then iterate — no descriptor stays open across
+          # the validator calls. Streaming the list into the loop instead leaves it on
+          # a descriptor the loop body inherits, and any child that reads that
+          # descriptor consumes the remaining entries: the loop ends early having
+          # validated one endpoint of ten, and exits 0. Verified both ways — a stub
+          # that reads stdin defeats `done < "$LIST"`, and a stub that reads fd 3
+          # defeats `done 3< "$LIST"`, each reaching 1 of 10. rc17 reads neither, but
+          # VALIDATOR_VERSION rolls org-wide without this file being reread, and the
+          # failure mode is a green on the one required check. An array cannot be
+          # shortened by anything the loop body does.
           if [ -d definition/endpoints ]; then
             ENDPOINT_LIST="$(mktemp)"
             trap 'rm -f "$ENDPOINT_LIST"' EXIT
             find definition/endpoints/ -name "*.json" -type f -print0 > "$ENDPOINT_LIST"
-            while IFS= read -r -d '' ep <&3; do
+            mapfile -d '' -t ENDPOINTS < "$ENDPOINT_LIST"
+            for ep in "${ENDPOINTS[@]}"; do
               echo "--- $ep ---"
               analitiq-validate --document "$ep" --semantic-only
-            done 3< "$ENDPOINT_LIST"
+            done
+            # A positive statement of what was covered. A count is the one thing that
+            # distinguishes "validated every endpoint" from "validated the first one",
+            # and this step otherwise reports both as silence.
+            echo "Validated ${#ENDPOINTS[@]} endpoint document(s)."
           fi
 
   # Decides whether tier-1 conformance can say anything about this repo, in its own
@@ -375,7 +384,9 @@ jobs:
                   f"accepted here: the registry standardises on pyproject.toml.) If "
                   f"this file is not connector code, it still has to move: a repo with "
                   f"no package is audited as a thin connector, and nothing here can "
-                  f"tell the difference."
+                  f"tell the difference. This check runs at every kind, including the "
+                  f"ones tier 1 does not assess — which is why you can be failing it "
+                  f"on a repo whose conformance run is skipped."
               )
 
           # A valid kind the kit has no behaviour checks for. Running anyway would go
