@@ -289,9 +289,11 @@ jobs:
   # cannot supply generically, and cloud warehouses have no containerizable server at
   # all. Tier 2 stays opt-in per connector repo.
   #
-  # NOTE ON MERGING: every caller stub resolves this workflow at @main with no tag or
-  # SHA pin, so merging switches this job on in all 13 connector repos at once. Merge
-  # only once the pinned CDK is on PyPI and the packaged connectors pass tier 1.
+  # NOTE ON EDITING: every caller stub resolves this workflow at @main with no tag or
+  # SHA pin, so a commit to main takes effect in all 13 connector repos at once, with
+  # no per-repo rollout to catch a regression first. Anything that changes what this
+  # job accepts or rejects — the CDK floor, the gate's conditions, the pytest
+  # invocation — should be piloted against the packaged connectors before merge.
   conformance:
     needs: conformance-gate
     if: needs.conformance-gate.outputs.run == 'true'
