@@ -111,17 +111,33 @@ jobs:
             fi
           done
 
-          # Per-endpoint annotation checks. Trailing slash so a SYMLINKED endpoints/ is
-          # descended, and through a file so a failing find fails the step instead of
-          # yielding an empty list indistinguishable from "no endpoints".
+          # Per-endpoint annotation checks.
+          #
+          # Trailing slash so a SYMLINKED definition/endpoints is descended — without
+          # it find refuses the starting point, reports nothing and exits 0, and a
+          # fully configured connector reads as having no endpoints at all. Not `-L`,
+          # which would additionally follow symlinked entries INSIDE the directory and
+          # let a PR aim an endpoint at any file the runner can read.
+          #
+          # Through a file, so a failing find fails the step rather than yielding an
+          # empty list indistinguishable from "no endpoints" — that is what
+          # `mapfile < <(find …)` did, since a process substitution's status is
+          # discarded.
+          #
+          # The list is fed on fd 3, not stdin. On stdin the loop body inherits it, so
+          # a validator release that read stdin would swallow the remaining entries:
+          # four endpoints would be validated as one and the step would still exit 0.
+          # rc17 does not read stdin, but VALIDATOR_VERSION rolls org-wide without this
+          # file being reread, and the failure mode is a green on the one required
+          # check.
           if [ -d definition/endpoints ]; then
             ENDPOINT_LIST="$(mktemp)"
             trap 'rm -f "$ENDPOINT_LIST"' EXIT
             find definition/endpoints/ -name "*.json" -type f -print0 > "$ENDPOINT_LIST"
-            while IFS= read -r -d '' ep; do
+            while IFS= read -r -d '' ep <&3; do
               echo "--- $ep ---"
               analitiq-validate --document "$ep" --semantic-only
-            done < "$ENDPOINT_LIST"
+            done 3< "$ENDPOINT_LIST"
           fi
 
   # Decides whether tier-1 conformance can say anything about this repo, in its own
@@ -169,8 +185,8 @@ jobs:
           #   install_self — is there a package to add to the CDK's pip resolution?
           #                  Answered by the `[project]` table in pyproject.toml.
           #
-          # Keying `run` on the package — as this gate did when it landed — skipped
-          # every thin connector. A `kind: database` repo that ships no class of its
+          # Keying `run` on the package instead skips every thin connector, which is
+          # what .github#11 is. A `kind: database` repo that ships no class of its
           # own is a path the CDK explicitly supports: with no entry point matching
           # connector_id, cdk/conformance/target.py resolves GenericSQLConnector, and
           # every check that does not need a bespoke class still applies. Skipping
@@ -325,12 +341,12 @@ jobs:
           #
           # This is the check that makes "no [project] table" mean "thin" rather than
           # "unpackaged", so it must not key on a path. Keying it on `connector.py`
-          # alone (as it did when it landed) let a src/ layout through, and keying it
-          # on root + src/ still let a flat package directory through: the repo ships
-          # real connector code, the gate calls it thin, the suite audits
-          # GenericSQLConnector, and the two class-level checks pass vacuously — a
-          # green certifying CDK code. That is .github#12, and widening the gate to
-          # admit thin repos is what turns it from a silent skip into a silent pass.
+          # misses a src/ layout; keying it on root + src/ still misses a flat package
+          # directory. Either way the repo ships real connector code, the gate calls it
+          # thin, the suite audits GenericSQLConnector, and the two class-level checks
+          # pass vacuously — a green certifying CDK code. That is .github#12, and
+          # widening the gate to admit thin repos is what turns it from a silent skip
+          # into a silent pass.
           #
           # So: any .py anywhere. There is no layout-shaped answer here — setuptools
           # auto-discovery covers root and src/, but a backend configured to build
@@ -359,9 +375,7 @@ jobs:
                   f"accepted here: the registry standardises on pyproject.toml.) If "
                   f"this file is not connector code, it still has to move: a repo with "
                   f"no package is audited as a thin connector, and nothing here can "
-                  f"tell the difference. This applies at every kind, including the "
-                  f"ones tier 1 does not yet assess — the packaging contract is not "
-                  f"conditional on whether conformance would have run."
+                  f"tell the difference."
               )
 
           # A valid kind the kit has no behaviour checks for. Running anyway would go
@@ -427,12 +441,9 @@ jobs:
               # the checks list would otherwise distinguish them — the caveat cannot
               # live only in a log line and a summary nobody opens.
               print(
-                  f"::notice::Thin connector (kind={kind!r}, no [project] table): the CDK's "
-                  f"GenericSQLConnector stands in for the connector class. Only the "
-                  f"checks that need a bespoke class lose their subject; the rest "
-                  f"still apply, on whatever the definition itself supplies — the "
-                  f"type-map checks need type maps, the dialect checks need the "
-                  f"declared driver's SQLAlchemy dialect importable."
+                  f"::notice::Thin connector (kind={kind!r}, no [project] table): the "
+                  f"CDK's GenericSQLConnector stands in for the connector class, so "
+                  f"this run is a materially narrower assurance. See the job summary."
               )
               summary(
                   f"### Tier-1 conformance: thin connector\n\n"
@@ -664,16 +675,14 @@ jobs:
 
           # Which class this run SHOULD have resolved follows from whether the install
           # step installed one, and that is the gate's verdict — read it, don't
-          # re-derive it. Probing for a root connector.py here — as the first two
-          # revisions of .github#11 did — asks a different question, and gets it wrong
-          # for any repo whose class is not at that exact path. A packaged src/-layout
-          # repo with a misnamed entry point resolved GenericSQLConnector, and this
-          # step announced "thin connector" and exited 0: the very defect its header
-          # comment above describes, waved through. The revision that added an
-          # assertion to that branch then got the other direction wrong too, failing
-          # the same repo with a CORRECT entry point for resolving its own class.
-          # One definition of thin, for the same reason ANALITIQ_CONNECTOR_DIR is one
-          # definition of the target.
+          # re-derive it. Probing for a root connector.py here asks a different
+          # question, and gets it wrong in BOTH directions for any repo whose class is
+          # not at that exact path. A packaged src/-layout repo with a misnamed entry
+          # point resolves GenericSQLConnector, and such a probe calls it a thin
+          # connector and exits 0 — the very defect this step's header comment
+          # describes, waved through. The same repo with a CORRECT entry point is
+          # failed for resolving its own class. One definition of thin, for the same
+          # reason ANALITIQ_CONNECTOR_DIR is one definition of the target.
           if os.environ["INSTALL_SELF"] == "false":
               # Nothing of this repo's was installed, so the kit's own answer is the
               # expected one — but WHICH answer that is depends on the kind.
@@ -711,8 +720,9 @@ jobs:
                       f"in analitiq-cdk {os.environ['CDK_VERSION']}."
                   )
               # Anything else means a connector class reached this environment from
-              # somewhere this job did not put it.
-              if cls is not None and cls is not GenericSQLConnector:
+              # somewhere this job did not put it. (`cls is None` is already handled
+              # above, so this is the only remaining possibility.)
+              if cls is not GenericSQLConnector:
                   sys.exit(
                       f"the gate found no installable package, so the CDK's generic "
                       f"class is expected here, but conformance resolved {origin}. "
