@@ -376,12 +376,18 @@ jobs:
               # ships-Python branch would then send the author to add a table that is
               # not what is broken. `project = "x"` cannot be fixed by declaring an
               # entry point under it; the new header would collide with the scalar.
-              def require(value, shown, kind, label):
-                  if value is not None and not isinstance(value, kind):
+              #
+              # Parameters are named away from `kind`, `label` and `shown`, each of
+              # which means something else within a few lines of here.
+              def require(value, key, expected_type, expected_label):
+                  if value is not None and not isinstance(value, expected_type):
                       sys.exit(
-                          f"pyproject.toml: {shown} must be {label}, got "
+                          f"pyproject.toml: {key} must be {expected_label}, got "
                           f"{type(value).__name__}. The conformance gate reads it to "
-                          f"decide whether this repo ships a connector class."
+                          f"decide whether this repo ships a connector class. Like the "
+                          f"ships-Python check below, this runs at every kind, "
+                          f"including the ones tier 1 does not assess — so you can be "
+                          f"failing it on a repo whose conformance run is skipped."
                       )
                   return value
 
@@ -440,6 +446,13 @@ jobs:
           # while every false positive is a red carrying an actionable message. A thin
           # repo with a stray helper script is told to package it or move it, which is
           # a worse day for one author than a silent green is for nobody.
+          #
+          # A constraint .github#14 inherits: it wants a thin `kind: database` repo to
+          # package its SQLAlchemy dialect, and such a repo declares no entry point, so
+          # it cannot carry ANY .py — not a conftest.py, not a noxfile.py. Loosening
+          # this to "…that aren't tests" is a separate decision from .github#12, and it
+          # is the one that decides whether a class parked under tests/ is assessed or
+          # waved through. Neither thin repo in the catalogue ships a .py today.
           sources = sorted(
               path.relative_to(root).as_posix()
               for path in root.rglob("*.py")
