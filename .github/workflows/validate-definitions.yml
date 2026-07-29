@@ -307,12 +307,16 @@ jobs:
       # variables and an unset `vars` entry expands to an empty, invalid pip spec.
       #
       # The floor must name a release whose kit FAILS a connector kind it cannot
-      # assess (analitiq-engine#414). 0.2.0rc1 predates that fix: run against the
-      # `pipedrive` definition it reports 4 passed / 20 skipped and exits 0, so green
-      # there means "not assessed", not "passed". The install step enforces the floor
-      # on the RESOLVED value, since the variable that actually decides is set in
-      # org/repo settings where this comment is not visible.
-      CDK_VERSION: ${{ vars.CDK_VERSION || '0.2.0rc2' }}
+      # assess (analitiq-engine#414), because this job reports its result as a status
+      # check and a skip-only run is indistinguishable from a pass there. Verified
+      # against the `pipedrive` definition (kind: api), which no tier-1 check covers:
+      # 0.2.0rc1 reports 4 passed / 20 skipped and exits 0 — "not assessed" rendered
+      # as "passed" — while 0.2.1 fails test_a_check_applies_to_this_connector_kind
+      # and exits 1. 0.2.1 is the first PyPI release carrying that check, so it is the
+      # floor. The install step enforces the floor on the RESOLVED value, since the
+      # variable that actually decides is set in org/repo settings where this comment
+      # is not visible.
+      CDK_VERSION: ${{ vars.CDK_VERSION || '0.2.1' }}
 
       # One definition of the target, inherited by every step and by the kit itself.
       # The verify step and the suite MUST agree on this; when they disagreed, the
@@ -357,7 +361,7 @@ jobs:
           python3 -P - <<'PY'
           import os, sys
           from packaging.version import Version
-          floor = Version("0.2.0rc2")
+          floor = Version("0.2.1")
           got = Version(os.environ["CDK_VERSION"])
           if got < floor:
               sys.exit(
