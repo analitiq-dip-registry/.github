@@ -259,13 +259,17 @@ jobs:
           KNOWN_KINDS = {"api", "database", "nosql", "document", "file", "s3", "stdout"}
 
           # Mirrors APPLIES_TO_KINDS in the kit's own tier-1 check modules
-          # (test_read_path, test_rendering). Hardcoding it duplicates a declaration
-          # that lives in the CDK, tolerable only while the answer is one kind: when
-          # analitiq-engine#415 lands API coverage, this set has to grow with it or
-          # every api repo stays silently ungated. Drift in the other direction is
+          # (test_read_path and test_rendering declare 'database'; test_api_transport
+          # and test_api_endpoints declare 'api', from analitiq-cdk 0.3.0 —
+          # analitiq-engine#415). Hardcoding it duplicates a declaration that lives in
+          # the CDK, so it has to grow whenever the kit covers a new kind or that
+          # kind's repos stay silently ungated. Drift in the other direction is
           # self-reporting — a kind this gate admits that the kit cannot assess fails
           # test_a_check_applies_to_this_connector_kind (analitiq-engine#414) red.
-          ASSESSABLE_KINDS = {"database"}
+          # Which is also why this set is keyed to the CDK floor below and not to the
+          # resolved CDK_VERSION: admitting a kind whose checks the running kit does
+          # not carry is caught loudly, never waved through.
+          ASSESSABLE_KINDS = {"database", "api"}
 
           # The groups cdk/conformance/target.py resolves a connector class through,
           # and the same two the engine registry uses. A repo declaring neither ships
@@ -500,29 +504,24 @@ jobs:
               )
 
           # A valid kind the kit has no behaviour checks for. Running anyway would go
-          # RED, not green — 0.2.1's test_a_check_applies_to_this_connector_kind exists
-          # to make "not assessed" a failure (analitiq-engine#414). Every api repo in
-          # the catalogue exits 1 (verified: pipedrive and easybill 2 failed / 3 passed
-          # / 20 skipped, xero, sevdesk and wise-api-key 1 failed / 5 passed / 19
-          # skipped — clickhouse also exits 1, but on a connector_id defect that errors
-          # at collection before applicability is reached). The applicability red is a
-          # gap in the kit, which no connector author can act on, so the honest
-          # rendering is a grey skip here rather than an unactionable failure there.
+          # RED, not green — test_a_check_applies_to_this_connector_kind exists to make
+          # "not assessed" a failure (analitiq-engine#414). That red is a gap in the
+          # kit, which no connector author can act on, so the honest rendering is a
+          # grey skip here rather than an unactionable failure there.
           #
           # Not a free trade, in two directions. First, a red blocks and a skip
           # SATISFIES a required check. Second, the skip does not discriminate: it
           # takes the kind-agnostic failures with it, and some of those ARE actionable
-          # — the second failure on pipedrive and easybill is
-          # test_connector_ships_a_read_type_map, and clickhouse's is a missing
-          # connector_id. Suppressing those is the cost of suppressing the one nobody
-          # can fix, and it is only worth paying while analitiq-engine#415 is
-          # outstanding.
+          # — a missing type-map-read.json, a missing connector_id. Suppressing those
+          # is the cost of suppressing the one nobody can fix, and it is only worth
+          # paying for as long as the kind is uncovered.
           #
-          # Reached whether or not the repo declares a package, so packaging an api
-          # connector no longer converts its skip into that red. That changes nothing
-          # for the catalogue today — none of the six api repos declares a package, so
-          # all six were already skipped by the packaging-keyed gate this replaces —
-          # but it decides what happens the day one of them does.
+          # No kind in the catalogue lands here today: every repo is `database` or
+          # `api`, and analitiq-cdk 0.3.0 covers both (analitiq-engine#415). This
+          # branch is what the next uncovered kind meets, not a standing state.
+          #
+          # Reached whether or not the repo declares a package, so packaging a
+          # connector of an uncovered kind does not convert its skip into that red.
           #
           # Every repo that lands here is ungated, which is why 'validate / conformance'
           # cannot become a required ruleset context yet: GitHub counts a skipped job as
@@ -538,14 +537,15 @@ jobs:
               )
               summary(
                   f"### Tier-1 conformance: NOT ASSESSED\n\n"
-                  f"This connector declares `kind: {kind}`. The tier-1 checks that "
-                  f"certify how a connector reads and renders SQL declare "
-                  f"`APPLIES_TO_KINDS = (\"database\",)`, so none of them apply here, "
-                  f"and the kit carries no equivalent for this kind yet. The checks "
-                  f"that are kind-agnostic — the definition, type-map and "
-                  f"override-surface ones — would still have applied; they are "
-                  f"skipped along with the rest, so this run is no evidence either "
-                  f"way. API coverage is analitiq-engine#415."
+                  f"This connector declares `kind: {kind}`. Every tier-1 behaviour "
+                  f"check declares the kind it applies to — "
+                  f"`APPLIES_TO_KINDS = (\"database\",)` for the ones that certify how "
+                  f"a connector reads and renders SQL, `(\"api\",)` for the ones that "
+                  f"certify what an API definition resolves to — and the kit carries "
+                  f"no equivalent for this kind yet. The checks that are kind-agnostic "
+                  f"— the definition, type-map and override-surface ones — would still "
+                  f"have applied; they are skipped along with the rest, so this run is "
+                  f"no evidence either way."
               )
               emit("run", "false")
               sys.exit(0)
@@ -565,7 +565,25 @@ jobs:
           emit("run", "true")
           emit("install_self", "true" if declares_package else "false")
           emit("claims_class", "true" if claims_class else "false")
-          if not claims_class:
+          if not claims_class and kind == "api":
+              # An api connector is thin by construction, not by omission: the CDK
+              # owns no API base class, so there is nothing for it to declare and
+              # nothing standing in. Saying "GenericSQLConnector stands in" here
+              # would describe a substitution that does not happen and send an
+              # author looking for an entry point they must not add.
+              summary(
+                  "### Tier-1 conformance: API connector\n\n"
+                  "An API connector ships no class — the CDK's generic API path "
+                  "executes this definition directly — so every check here reads "
+                  "the definition and its endpoint documents. A green certifies "
+                  "that the declared transport materializes against the connection "
+                  "`connection_contract` promises, that the declared auth type "
+                  "matches the credential the transport carries, and that every "
+                  "endpoint expression addresses a scope the phase using it "
+                  "populates. It certifies nothing about the provider's actual "
+                  "responses; there is no live tier for API connectors."
+              )
+          elif not claims_class:
               # ::notice:: rather than a bare print. A thin connector's green is a
               # materially narrower assurance than a packaged one's, and nothing on
               # the checks list would otherwise distinguish them — the caveat cannot
@@ -630,16 +648,16 @@ jobs:
       #
       # The floor must name a release whose kit FAILS a connector kind it cannot
       # assess (analitiq-engine#414), because this job reports its result as a status
-      # check and a skip-only run is indistinguishable from a pass there. Verified
-      # against the `pipedrive` definition (kind: api), a kind no tier-1 check declares
-      # support for: 0.2.0rc1 reports 4 passed / 20 skipped and exits 0 — the four that
-      # pass are the kind-agnostic ones, so "not assessed" is rendered
-      # as "passed" — while 0.2.1 fails test_a_check_applies_to_this_connector_kind
-      # and exits 1. 0.2.1 is the first PyPI release carrying that check, so it is the
-      # floor. The install step enforces the floor on the RESOLVED value, since the
-      # variable that actually decides is set in org/repo settings where this comment
-      # is not visible.
-      CDK_VERSION: ${{ vars.CDK_VERSION || '0.2.1' }}
+      # check and a skip-only run is indistinguishable from a pass there. 0.2.1 was
+      # the first PyPI release carrying that check and was the floor for that reason;
+      # 0.3.0 raises it because ASSESSABLE_KINDS in conformance-gate now admits `api`,
+      # and under any earlier CDK an api repo reaches the suite only to fail that same
+      # applicability check — a red no connector author can act on. The two move
+      # together: the floor is what makes the gate's set true of the running kit.
+      # The install step enforces the floor on the RESOLVED value, since the variable
+      # that actually decides is set in org/repo settings where this comment is not
+      # visible.
+      CDK_VERSION: ${{ vars.CDK_VERSION || '0.3.0' }}
 
       # One definition of the target, inherited by every step and by the kit itself.
       # The verify step and the suite MUST agree on this; when they disagreed, the
@@ -698,13 +716,16 @@ jobs:
           python3 -P - <<'PY'
           import os, sys
           from packaging.version import Version
-          floor = Version("0.2.1")
+          floor = Version("0.3.0")
           got = Version(os.environ["CDK_VERSION"])
           if got < floor:
               sys.exit(
                   f"CDK_VERSION={got} is below the {floor} floor. Releases before "
-                  f"{floor} exit 0 on a connector kind they cannot assess "
-                  f"(analitiq-engine#414), which makes this gate vacuous. Refusing to run."
+                  f"0.2.1 exit 0 on a connector kind they cannot assess "
+                  f"(analitiq-engine#414), which makes this gate vacuous; releases "
+                  f"before {floor} carry no api checks, so every api repo the "
+                  f"conformance gate now admits would fail applicability instead "
+                  f"(analitiq-engine#415). Refusing to run."
               )
           PY
 
@@ -850,16 +871,24 @@ jobs:
               # reached through a behaviour change in the kit rather than a moved
               # class — which the module-level import cannot catch, so this must.
               #
-              # `database` is the only kind that reaches this job at all today, and
-              # rather than pre-authorising a verdict for kinds nobody has evaluated,
-              # this refuses them. Tolerating None for other kinds would be accurate
-              # about the CDK — that IS its documented outcome — but it would emit the
-              # identical "thin connector, none is the expected stand-in" green that
-              # the guard below exists to prevent, for a kind no one has looked at, and
-              # nothing at ASSESSABLE_KINDS points here. Failing makes revisiting this
-              # branch a required step of growing that set rather than an inherited
-              # default.
-              if target.kind != "database":
+              # What that expected answer IS differs by kind, and each kind admitted
+              # to ASSESSABLE_KINDS has to be decided here rather than inheriting a
+              # default. A kind with no entry below is refused: tolerating whatever
+              # the CDK returns would be accurate about the CDK — that IS its
+              # documented outcome — but it would emit the identical "thin connector,
+              # this is the expected stand-in" green that the guards below exist to
+              # prevent, for a kind no one has looked at.
+              #
+              #   database — GenericSQLConnector, the CDK's substitution. None means
+              #     the fallback did not happen and the suite would run with nothing
+              #     under test.
+              #   api      — None, and only None. The CDK owns no API base class: its
+              #     generic API path executes the definition, so an api connector has
+              #     nothing to substitute and every api check reads the definition
+              #     alone (analitiq-engine#415). A class appearing here came from
+              #     somewhere this job did not put it.
+              EXPECTED_THIN_CLASS = {"database": GenericSQLConnector, "api": None}
+              if target.kind not in EXPECTED_THIN_CLASS:
                   sys.exit(
                       f"this job ran for kind {target.kind!r}, which this step has no "
                       f"expectation for. ASSESSABLE_KINDS in the conformance-gate job "
@@ -867,21 +896,24 @@ jobs:
                       f"thin {target.kind} connector should resolve to, and assert it "
                       f"here."
                   )
-              if cls is None:
+              expected = EXPECTED_THIN_CLASS[target.kind]
+              if expected is not None and cls is None:
                   sys.exit(
-                      f"the CDK substitutes GenericSQLConnector for kind: database "
-                      f"when no entry point matches connector_id, but conformance "
-                      f"resolved no class at all. The fallback did not happen, so the "
-                      f"suite would run with nothing under test. Look at what changed "
-                      f"in analitiq-cdk {os.environ['CDK_VERSION']}."
+                      f"the CDK substitutes {expected.__name__} for kind: "
+                      f"{target.kind} when no entry point matches connector_id, but "
+                      f"conformance resolved no class at all. The fallback did not "
+                      f"happen, so the suite would run with nothing under test. Look "
+                      f"at what changed in analitiq-cdk {os.environ['CDK_VERSION']}."
                   )
               # Anything else means a connector class reached this environment from
-              # somewhere this job did not put it. (`cls is None` is already handled
-              # above, so this is the only remaining possibility.)
-              if cls is not GenericSQLConnector:
+              # somewhere this job did not put it. (A missing substitution is already
+              # handled above, so this is the only remaining possibility.)
+              if cls is not expected:
+                  wanted = "no class at all" if expected is None else expected.__name__
                   sys.exit(
                       f"the gate found no connector entry point declared in "
-                      f"pyproject.toml, so the CDK's generic class is expected here, "
+                      f"pyproject.toml, so {wanted} is expected for kind "
+                      f"{target.kind!r}, "
                       f"but conformance resolved {origin}. Something registered a "
                       f"connector class this repo does not declare — if that class IS "
                       f"this repo's, declare it under analitiq.source_connectors / "
@@ -890,7 +922,7 @@ jobs:
                   )
               print(
                   f"no connector entry point declared — thin connector, {origin} is "
-                  f"the expected stand-in"
+                  f"the expected stand-in for kind {target.kind!r}"
               )
               sys.exit(0)
 
