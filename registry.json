@@ -15,15 +15,28 @@
     },
     {
       "id": "",
-      "slug": "duckdb",
-      "name": "DuckDB",
-      "description": "Connector for DuckDB, an embedded in-process OLAP database. Connects via the duckdb_engine SQLAlchemy dialect to a local database file or an in-memory database. DuckDB is not a client-server system: there is no host, port, username, password, or TLS handshake; access is governed by local filesystem permissions.",
+      "slug": "clickhouse",
+      "name": "ClickHouse",
+      "description": "ClickHouse column-oriented OLAP database. Reads and writes over the async SQLAlchemy clickhouse+asynch transport (the clickhouse-sqlalchemy dialect on the asynch native-protocol driver): username/password authentication, a three-value ssl_mode (disable / require / verify-full) realized through the driver's secure/verify connect arguments, and schema/table/view discovery via ClickHouse's INFORMATION_SCHEMA views. ClickHouse's native protocol has no STARTTLS-style upgrade - TLS is a separate listener (9440) from the plaintext one (9000) - so ssl_mode and port must agree. Write-path facts are declared honestly rather than conveniently: ClickHouse has no MERGE, no ON CONFLICT and no ON DUPLICATE KEY, so merge_form is 'none' and upsert streams are refused at handshake instead of silently duplicating rows (row-collapsing upserts are a table-engine property - ReplacingMergeTree plus FINAL - not a statement grammar the engine can render); DDL is never transactional, so staging uses a real MergeTree table created and dropped outside any transaction. No first-class ADBC driver and no Arrow Flight SQL endpoint exist for ClickHouse, so the SQLAlchemy transport is the only supported path; batches land through the native columnar block insert the driver performs on executemany, which is why bulk_load declares no separate mechanism and why write_unit asks the coalescer for large batches (ClickHouse penalizes small, frequent inserts with part explosion).",
       "category_id": "",
       "image_link": "",
       "type": "database",
-      "driver": "duckdb",
+      "driver": "clickhouse+asynch",
+      "repo": "analitiq-dip-registry/clickhouse",
+      "version": "0.1.0",
+      "versions": []
+    },
+    {
+      "id": "",
+      "slug": "duckdb",
+      "name": "DuckDB",
+      "description": "DuckDB, an embedded in-process OLAP database. Reads and writes over the synchronous SQLAlchemy duckdb+duckdb_engine transport against a local database file or an in-memory database. DuckDB is not a client-server system: there is no host, port, username, password or TLS handshake, and access is governed by local filesystem permissions - so the connector declares auth type 'none' and no TLS block. Schema/table/view discovery runs against information_schema. The declared SQL write path is stage-then-merge: a session-scoped CREATE TEMPORARY TABLE ... AS SELECT ... WHERE 1 = 0 stage (DuckDB implements no CREATE TABLE ... LIKE), a Postgres-style INSERT ... ON CONFLICT ... DO UPDATE upsert, and transactional DDL, so the whole cycle rolls back as one unit. Batches land through the connector's bulk hook, which registers the Arrow batch on the in-process connection and INSERT ... SELECTs from it - DuckDB's native zero-copy Arrow ingestion - instead of row-by-row executemany.",
+      "category_id": "",
+      "image_link": "",
+      "type": "database",
+      "driver": "duckdb+duckdb_engine",
       "repo": "analitiq-dip-registry/duckdb",
-      "version": "0.0.1",
+      "version": "0.1.0",
       "versions": []
     },
     {
@@ -35,20 +48,20 @@
       "image_link": "",
       "type": "api",
       "repo": "analitiq-dip-registry/easybill",
-      "version": "0.0.1",
+      "version": "0.1.0",
       "versions": []
     },
     {
       "id": "",
       "slug": "mariadb",
       "name": "MariaDB",
-      "description": "MariaDB relational database — a community-developed, open-source fork of MySQL. Connects over the MySQL wire protocol via the SQLAlchemy mariadb+pymysql dialect for structured data storage, querying, and table discovery.",
+      "description": "MariaDB relational database (11.4 LTS), the community-developed fork of MySQL. Reads and writes over the async SQLAlchemy mariadb+aiomysql transport: the mariadb dialect name puts SQLAlchemy in MariaDB-only mode, so the server's 'X.Y.Z-MariaDB' version string is required and MariaDB-specific behaviour is never gated on a MySQL version probe. Username/password authentication, MariaDB's --ssl / --ssl-verify-server-cert TLS surface expressed as a four-value ssl_mode with a post-connect Ssl_cipher enforcement probe, schema/table/view discovery via information_schema, and declared SQL write-path capabilities (stage-then-merge with CREATE TEMPORARY TABLE ... LIKE and INSERT ... ON DUPLICATE KEY UPDATE). The session is pinned to SET time_zone = '+00:00' so TIMESTAMP values carry a well-defined UTC instant. No ADBC driver and no Arrow Flight SQL endpoint exist for MariaDB, so the SQLAlchemy transport is the only supported path; batches land via executemany (LOAD DATA LOCAL INFILE is not reachable through the engine's connect-argument surface). MariaDB natives with no MySQL counterpart - UUID, INET4 and INET6 - are read as text.",
       "category_id": "",
       "image_link": "",
       "type": "database",
-      "driver": "mariadb+pymysql",
+      "driver": "mariadb+aiomysql",
       "repo": "analitiq-dip-registry/mariadb",
-      "version": "0.0.1",
+      "version": "0.1.0",
       "versions": []
     },
     {
@@ -62,6 +75,18 @@
       "driver": "mysql+aiomysql",
       "repo": "analitiq-dip-registry/mysql",
       "version": "0.3.1",
+      "versions": []
+    },
+    {
+      "id": "",
+      "slug": "pipedrive",
+      "name": "Pipedrive",
+      "description": "Sales CRM and pipeline management platform for tracking deals, contacts, and sales activities",
+      "category_id": "",
+      "image_link": "",
+      "type": "api",
+      "repo": "analitiq-dip-registry/pipedrive",
+      "version": "1.1.0",
       "versions": []
     },
     {
@@ -99,7 +124,7 @@
       "image_link": "",
       "type": "api",
       "repo": "analitiq-dip-registry/sevdesk",
-      "version": "3.0.0",
+      "version": "3.0.1",
       "versions": []
     },
     {
@@ -124,7 +149,7 @@
       "image_link": "",
       "type": "api",
       "repo": "analitiq-dip-registry/wise-api-key",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "versions": []
     },
     {
