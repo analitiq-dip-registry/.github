@@ -36,7 +36,7 @@
       "type": "database",
       "driver": "duckdb+duckdb_engine",
       "repo": "analitiq-dip-registry/duckdb",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "versions": []
     },
     {
@@ -93,13 +93,13 @@
       "id": "",
       "slug": "postgres",
       "name": "PostgreSQL",
-      "description": "PostgreSQL database connector. Reads and writes Arrow data over the first-class ADBC libpq driver (COPY-based bulk ingestion) as the default transport, with an async SQLAlchemy (asyncpg) transport as the engine-side SQL path. Username/password authentication, libpq TLS modes (disable through verify-full), and table/view discovery via information_schema.",
+      "description": "PostgreSQL database connector. Reads and writes Arrow data over the first-class ADBC libpq driver (COPY-based bulk ingestion) as the default transport, with an async SQLAlchemy (asyncpg) transport as the engine-side SQL/metadata path. Username/password authentication, libpq TLS modes (disable through verify-full), schema/table/view discovery via information_schema, and declared SQL write-path capabilities (INSERT ... ON CONFLICT upsert, real staging relations, transactional DDL, ADBC native ingest).",
       "category_id": "",
       "image_link": "",
       "type": "database",
       "driver": "postgresql",
       "repo": "analitiq-dip-registry/postgres",
-      "version": "1.0.0",
+      "version": "2.0.0",
       "versions": []
     },
     {
