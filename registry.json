@@ -131,13 +131,13 @@
       "id": "",
       "slug": "snowflake",
       "name": "Snowflake",
-      "description": "Snowflake cloud data warehouse connector using the native ADBC Snowflake driver with standard username and password authentication over TLS.",
+      "description": "Snowflake cloud data warehouse connector built on the native ADBC Snowflake driver. Reads compile to paged SELECTs and stream back as Arrow; writes run the stage-then-MERGE primitive, landing each batch through the driver's own bulk ingest (Arrow -> Parquet -> PUT to a temporary internal stage -> COPY INTO) and applying it to the target with MERGE / INSERT ... SELECT. Authenticates with a Snowflake username and password over HTTPS on port 443.",
       "category_id": "",
       "image_link": "",
       "type": "database",
       "driver": "snowflake",
       "repo": "analitiq-dip-registry/snowflake",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "versions": []
     },
     {
