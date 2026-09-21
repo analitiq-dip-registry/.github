@@ -800,7 +800,8 @@ jobs:
           try:
               target = load_target(root)
           except ConformanceSetupError as err:
-              # load_target is fail-loud for far more than entry points. Name that rather than letting a bare traceback masquerade as an
+              # load_target is fail-loud for far more than entry points. Name
+              # that rather than letting a bare traceback masquerade as an
               # entry-point problem under this step's title.
               sys.exit(f"the conformance kit cannot load this connector: {err}")
 
