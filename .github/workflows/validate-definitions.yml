@@ -45,7 +45,7 @@ jobs:
       # contributor's PR. Bump it occasionally, not on every rc. Consequence to know about:
       # on a repo deliberately held back by a repo variable, fork PRs validate against this
       # floor rather than that repo's pin.
-      VALIDATOR_VERSION: ${{ vars.VALIDATOR_VERSION || '1.0.0rc17' }}
+      VALIDATOR_VERSION: ${{ vars.VALIDATOR_VERSION || '1.0.0rc25' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -86,8 +86,7 @@ jobs:
           set -euo pipefail
 
           # Validation needs no network and no schema host — it is model-driven and
-          # fully offline. (--semantic-only is a no-op for the current validator; kept
-          # for releases that still parse it.)
+          # fully offline.
           #
           # Every document, every repo, no exceptions. There is no "unconfigured
           # scaffold" branch: a repo whose definition is incomplete IS incomplete, and
@@ -98,18 +97,18 @@ jobs:
           fi
 
           # Coverage is anchored on the connector: this call discovers the sibling
-          # type-map-read.json and endpoints/ from definition/ and fails if an endpoint
-          # native is unresolved by the read map.
+          # type-map.json and endpoints/ from definition/ and fails if an endpoint
+          # native is unresolved by the read section.
           echo "--- definition/connector.json ---"
-          analitiq-validate --document definition/connector.json --semantic-only
+          analitiq-validate --document definition/connector.json
 
-          # Type-map rule checks (read always; write for database connectors).
-          for m in definition/type-map-read.json definition/type-map-write.json; do
-            if [ -f "$m" ]; then
-              echo "--- $m ---"
-              analitiq-validate --document "$m" --semantic-only
-            fi
-          done
+          # Type-map rule checks. One document carries both directions; which
+          # sections a connector must have (read + write for a database, read only
+          # for an API) is the validator's package rule, not this step's.
+          if [ -f definition/type-map.json ]; then
+            echo "--- definition/type-map.json ---"
+            analitiq-validate --document definition/type-map.json
+          fi
 
           # Per-endpoint annotation checks.
           #
@@ -141,7 +140,7 @@ jobs:
             mapfile -d '' -t ENDPOINTS < "$ENDPOINT_LIST"
             for ep in "${ENDPOINTS[@]}"; do
               echo "--- $ep ---"
-              analitiq-validate --document "$ep" --semantic-only
+              analitiq-validate --document "$ep"
             done
             # A positive statement of what was covered. A count is the one thing that
             # distinguishes "validated every endpoint" from "validated the first one",
