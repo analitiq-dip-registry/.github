@@ -129,7 +129,7 @@ jobs:
           # descriptor consumes the remaining entries: the loop ends early having
           # validated one endpoint of ten, and exits 0. Verified both ways — a stub
           # that reads stdin defeats `done < "$LIST"`, and a stub that reads fd 3
-          # defeats `done 3< "$LIST"`, each reaching 1 of 10. rc17 reads neither, but
+          # defeats `done 3< "$LIST"`, each reaching 1 of 10. The pinned validator reads neither, but
           # VALIDATOR_VERSION rolls org-wide without this file being reread, and the
           # failure mode is a green on the one required check. An array cannot be
           # shortened by anything the loop body does.
@@ -801,7 +801,7 @@ jobs:
               target = load_target(root)
           except ConformanceSetupError as err:
               # load_target is fail-loud for far more than entry points (unreadable
-              # connector.json, malformed sql_capabilities, an empty type-map-write).
+              # connector.json, malformed sql_capabilities, an empty write section in type-map.json).
               # Name that rather than letting a bare traceback masquerade as an
               # entry-point problem under this step's title.
               sys.exit(f"the conformance kit cannot load this connector: {err}")
