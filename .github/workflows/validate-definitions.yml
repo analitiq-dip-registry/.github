@@ -6,9 +6,10 @@ name: Validate Definitions (reusable)
 #
 # Two independent jobs run here:
 #
-#   validate     — analitiq-validate over the JSON definition files (.template#19):
-#                  model-driven, covering both document shape and semantic rules,
-#                  offline. Installs exact PyPI releases of analitiq-validator +
+#   validate     — the connector's JSON definition files graded as one in-memory
+#                  package request by the analitiq-validator library (.github#22):
+#                  model-driven, covering both document shape and cross-document
+#                  rules, offline. Installs exact PyPI releases of analitiq-validator +
 #                  analitiq-contract-models, both from the VALIDATOR_VERSION job env.
 #   conformance  — tier-1 analitiq-cdk conformance over the connector's Python
 #                  (.github#8): the definition files can be perfect while
@@ -37,7 +38,9 @@ jobs:
       # org-wide by setting the org variable VALIDATOR_VERSION; a repo that must stay on
       # an older validator sets a repo variable of the same name, which shadows the org
       # value for that repo only. No repo variable = follow the org — never seed one at
-      # repo-creation time, or that repo silently stops tracking org-wide bumps.
+      # repo-creation time, or that repo silently stops tracking org-wide bumps. Neither
+      # may name a release below 1.0.0rc26: the validation step imports the package
+      # request, which older releases lack, so such a pin fails that repo at import.
       #
       # The literal is a last-known-good floor, NOT a mirror of the org variable. PRs from
       # forks receive no org or repo variables at all, and an unset `vars` entry expands to
@@ -45,7 +48,7 @@ jobs:
       # contributor's PR. Bump it occasionally, not on every rc. Consequence to know about:
       # on a repo deliberately held back by a repo variable, fork PRs validate against this
       # floor rather than that repo's pin.
-      VALIDATOR_VERSION: ${{ vars.VALIDATOR_VERSION || '1.0.0rc25' }}
+      VALIDATOR_VERSION: ${{ vars.VALIDATOR_VERSION || '1.0.0rc26' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -81,72 +84,78 @@ jobs:
             "analitiq-validator==${VALIDATOR_VERSION}" \
             "analitiq-contract-models==${VALIDATOR_VERSION}"
 
+      # The whole connector is graded as one package request, so cross-document rules
+      # (an endpoint native the type map does not resolve, a missing type map) land in
+      # one verdict. The validator reads no files; this step selects them by the
+      # pinned ConnectorPackage's location table and hands their text over
+      # (analitiq-ai/claude-code-plugins#402 FR-018). Fully offline.
+      #
+      # -P for the reason given on the conformance gate: the cwd is the PR's checkout,
+      # and a root-level json.py or pathlib.py would otherwise decide this verdict.
       - name: Validate definitions
         run: |
           set -euo pipefail
+          python3 -P - <<'PY'
+          import os, pathlib, sys
 
-          # Validation needs no network and no schema host — it is model-driven and
-          # fully offline.
-          #
-          # Every document, every repo, no exceptions. There is no "unconfigured
-          # scaffold" branch: a repo whose definition is incomplete IS incomplete, and
-          # saying so is this check's entire job.
-          if [ ! -f definition/connector.json ]; then
-            echo "ERROR: definition/connector.json is missing."
-            exit 1
-          fi
+          from analitiq.contracts.connector_package import ConnectorPackage
+          from analitiq.contracts.validation_requests import ValidatePackageRequest
+          from analitiq.validator import validate_package
 
-          # Coverage is anchored on the connector: this call discovers the sibling
-          # type-map.json and endpoints/ from definition/ and fails if an endpoint
-          # native is unresolved by the read section.
-          echo "--- definition/connector.json ---"
-          analitiq-validate --document definition/connector.json
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
 
-          # Type-map rule checks. One document carries both directions; which
-          # sections a connector must have (read + write for a database, read only
-          # for an API) is the validator's package rule, not this step's.
-          if [ -f definition/type-map.json ]; then
-            echo "--- definition/type-map.json ---"
-            analitiq-validate --document definition/type-map.json
-          fi
+          def key(path):
+              return path.relative_to(root).as_posix()
 
-          # Per-endpoint annotation checks.
-          #
-          # Trailing slash so a SYMLINKED definition/endpoints is descended — without
-          # it find refuses the starting point, reports nothing and exits 0, and a
-          # fully configured connector reads as having no endpoints at all. Not `-L`,
-          # which would additionally follow symlinked entries INSIDE the directory and
-          # let a PR aim an endpoint at any file the runner can read.
-          #
-          # Through a file, so a failing find fails the step rather than yielding an
-          # empty list indistinguishable from "no endpoints" — that is what
-          # `mapfile < <(find …)` did, since a process substitution's status is
-          # discarded.
-          #
-          # Read into an array FIRST, then iterate — no descriptor stays open across
-          # the validator calls. Streaming the list into the loop instead leaves it on
-          # a descriptor the loop body inherits, and any child that reads that
-          # descriptor consumes the remaining entries: the loop ends early having
-          # validated one endpoint of ten, and exits 0. Verified both ways — a stub
-          # that reads stdin defeats `done < "$LIST"`, and a stub that reads fd 3
-          # defeats `done 3< "$LIST"`, each reaching 1 of 10. The pinned validator reads neither, but
-          # VALIDATOR_VERSION rolls org-wide without this file being reread, and the
-          # failure mode is a green on the one required check. An array cannot be
-          # shortened by anything the loop body does.
-          if [ -d definition/endpoints ]; then
-            ENDPOINT_LIST="$(mktemp)"
-            trap 'rm -f "$ENDPOINT_LIST"' EXIT
-            find definition/endpoints/ -name "*.json" -type f -print0 > "$ENDPOINT_LIST"
-            mapfile -d '' -t ENDPOINTS < "$ENDPOINT_LIST"
-            for ep in "${ENDPOINTS[@]}"; do
-              echo "--- $ep ---"
-              analitiq-validate --document "$ep"
-            done
-            # A positive statement of what was covered. A count is the one thing that
-            # distinguishes "validated every endpoint" from "validated the first one",
-            # and this step otherwise reports both as silence.
-            echo "Validated ${#ENDPOINTS[@]} endpoint document(s)."
-          fi
+          documents = {}
+          # Entries left out of the request. Each fails the job: the verdict cannot
+          # see what it was not sent, so passing on the verdict alone would turn an
+          # unreadable endpoint into a green check.
+          left_out = []
+
+          def unlisted(err):
+              left_out.append((key(pathlib.Path(err.filename)), f"cannot be listed: {err.strerror}"))
+
+          # Every file is offered to the location table, so nothing here restates
+          # where a package keeps its documents. Links are never followed.
+          for directory, subdirs, files in os.walk(root, onerror=unlisted):
+              here = pathlib.Path(directory)
+              for name in subdirs:
+                  if (here / name).is_symlink():
+                      left_out.append((
+                          key(here / name),
+                          "is a symlinked directory; links are not followed, so no "
+                          "document under it can be located"))
+              for name in files:
+                  path = here / name
+                  k = key(path)
+                  if ConnectorPackage.kind_at(k) is None or ConnectorPackage.secret_at(k):
+                      continue
+                  # With the root resolved, a path that resolves elsewhere is a link,
+                  # and only a link can lead outside the package root.
+                  if path.resolve() != path:
+                      left_out.append((k, f"is a link (to {path.resolve()}); links are not followed"))
+                      continue
+                  try:
+                      documents[k] = path.read_bytes().decode("utf-8")
+                  except (OSError, UnicodeDecodeError) as err:
+                      left_out.append((k, f"cannot be read as UTF-8 text: {err}"))
+
+          for k, reason in sorted(left_out):
+              print(f"::error::{k} {reason}. It was left out of the validation request.")
+
+          verdict = validate_package(ValidatePackageRequest(
+              package_kind=ConnectorPackage.ROOT_KIND, documents=documents))
+          for f in verdict["findings"]:
+              print(f"{f.get('severity', f['kind'])}  {f['message_id']}  {f['path']}: {f['message']}")
+
+          # A positive statement of coverage: an absent endpoint and a validated one
+          # otherwise both read as silence.
+          for k in sorted(documents):
+              print(f"  sent: {k}")
+          print(f"Validated package: {len(documents)} document(s); passed={verdict['passed']}.")
+          sys.exit(0 if verdict["passed"] and not left_out else 1)
+          PY
 
   # Decides whether tier-1 conformance can say anything about this repo, in its own
   # job so that "cannot assess" renders as a grey *Skipped* job rather than as a
