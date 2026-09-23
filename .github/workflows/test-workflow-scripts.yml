@@ -1,0 +1,41 @@
+name: Test workflow scripts
+
+# Runs the inline scripts of validate-definitions.yml against fixtures (.github#23).
+# That workflow is workflow_call only, so without this nothing runs it before callers
+# (every DIP connector, pinned @main) do.
+#
+# No paths filter: a filtered check never reports on other PRs, so it could not later
+# be made required without leaving those PRs pending.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # The release callers run, with no fallback: an unset variable fails the install
+      # rather than grading a release nobody runs.
+      VALIDATOR_VERSION: ${{ vars.VALIDATOR_VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test requirements
+        run: python3 -m pip install -r tests/requirements.txt
+
+      # The workflow's own install step, so its pins are not restated here.
+      - name: Install validator
+        run: python3 tests/workflow_steps.py validate "Install validator" | bash --noprofile --norc -eo pipefail
+
+      - name: Run tests
+        run: python3 -m pytest tests -v
