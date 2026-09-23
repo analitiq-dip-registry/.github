@@ -16,8 +16,9 @@ import yaml
 
 WORKFLOW = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "validate-definitions.yml"
 
-# GitHub's command for `shell: bash`, the default for a `run:` step on Linux.
-GITHUB_BASH = ["bash", "--noprofile", "--norc", "-eo", "pipefail"]
+# How GitHub runs a `run:` step that sets no `shell:`, as every step in the workflow
+# does. No pipefail: a script that wants it has to set it, here as for callers.
+GITHUB_BASH = ["bash", "-e"]
 
 
 def step_script(job_id: str, *, name: str | None = None, step_id: str | None = None) -> str:

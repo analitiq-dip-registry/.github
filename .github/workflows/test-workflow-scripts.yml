@@ -19,7 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # The release callers run, with no fallback: an unset variable fails the install
-      # rather than grading a release nobody runs.
+      # rather than grading a release nobody runs. PRs from forks get no variables, so
+      # they fail here too.
       VALIDATOR_VERSION: ${{ vars.VALIDATOR_VERSION }}
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +35,11 @@ jobs:
         run: python3 -m pip install -r tests/requirements.txt
 
       # The workflow's own install step, so its pins are not restated here.
+      # shell: bash adds pipefail, so a failed step lookup fails this step instead of
+      # piping an empty script into a bash that succeeds.
       - name: Install validator
-        run: python3 tests/workflow_steps.py validate "Install validator" | bash --noprofile --norc -eo pipefail
+        shell: bash
+        run: python3 tests/workflow_steps.py validate "Install validator" | bash -e
 
       - name: Run tests
         run: python3 -m pytest tests -v

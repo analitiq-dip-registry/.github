@@ -89,9 +89,8 @@ def test_missing_connector_fails_through_the_validator(package):
 
 
 def test_a_secret_location_is_never_opened(package, tmp_path):
-    # rc26 declares no secret location, so the endpoint location is made one. The
-    # pattern must be a member location: the validator maps each secret pattern
-    # back to its kind.
+    # The endpoint location is made secret. The pattern must be a member location:
+    # the validator maps each secret pattern back to its kind.
     site = tmp_path / "site"
     site.mkdir()
     (site / "sitecustomize.py").write_text(
