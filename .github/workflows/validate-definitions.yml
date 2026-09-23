@@ -38,7 +38,9 @@ jobs:
       # org-wide by setting the org variable VALIDATOR_VERSION; a repo that must stay on
       # an older validator sets a repo variable of the same name, which shadows the org
       # value for that repo only. No repo variable = follow the org — never seed one at
-      # repo-creation time, or that repo silently stops tracking org-wide bumps.
+      # repo-creation time, or that repo silently stops tracking org-wide bumps. Neither
+      # may name a release below 1.0.0rc26: the validation step imports the package
+      # request, which older releases lack, so such a pin fails that repo at import.
       #
       # The literal is a last-known-good floor, NOT a mirror of the org variable. PRs from
       # forks receive no org or repo variables at all, and an unset `vars` entry expands to
